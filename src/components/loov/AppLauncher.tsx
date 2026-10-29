@@ -76,8 +76,11 @@ const SLOT_OF: Partial<Record<LoovAppId, ModelSlot>> = {
 };
 /** 卡片下方的小字说明（替代模型下拉） */
 const NOTE: Partial<Record<LoovAppId, string>> = {
+  "claude-desktop": "loov.apps.desktopNote",
   "codex-desktop": "loov.apps.codexDesktopNote",
 };
+/** 安装包很大（Codex 桌面版约 1GB），安装时提示员工耐心等 */
+const BIG_DOWNLOAD: LoovAppId[] = ["codex-desktop"];
 
 type Busy =
   | { kind: "install"; stage: LoovInstallProgress["stage"]; percent: number | null }
@@ -94,7 +97,8 @@ export function AppLauncher({ models, catalog, tunnelReady }: AppLauncherProps) 
   const qc = useQueryClient();
   const { data: apps } = useLoovApps(true);
   const [busy, setBusy] = useState<Partial<Record<LoovAppId, Busy>>>({});
-  const [restartAsk, setRestartAsk] = useState(false);
+  // 要重启才能接入 Loov 的桌面应用（Claude Desktop / Codex 桌面版）
+  const [restartAsk, setRestartAsk] = useState<LoovAppId | null>(null);
   // 启动后延迟清 busy 的定时器（每个应用一个）：再次启动时先取消上一次的，免得把新的 busy 提前清掉
   const busyTimers = useRef<Partial<Record<LoovAppId, ReturnType<typeof setTimeout>>>>({});
   const picks = useModelPicks();
@@ -133,7 +137,7 @@ export function AppLauncher({ models, catalog, tunnelReady }: AppLauncherProps) 
       toast.success(t("loov.apps.launched", { name: NAME[id] }));
     } catch (e) {
       const err = parseLoovError(e);
-      if (err.code === "DESKTOP_RESTART_REQUIRED") setRestartAsk(true);
+      if (err.code === "DESKTOP_RESTART_REQUIRED") setRestartAsk(id);
       else toast.error(err.message);
     } finally {
       // 终端 / 应用窗口要一两秒才出来，状态多留一会儿，免得员工以为没反应又点一次
@@ -198,26 +202,28 @@ export function AppLauncher({ models, catalog, tunnelReady }: AppLauncherProps) 
                     : undefined
               }
               note={NOTE[id] ? t(NOTE[id]!) : undefined}
+              installHint={BIG_DOWNLOAD.includes(id) ? t("loov.apps.bigDownload") : undefined}
             />
           );
         })}
       </div>
 
-      <Dialog open={restartAsk} onOpenChange={setRestartAsk}>
+      <Dialog open={restartAsk !== null} onOpenChange={(open) => !open && setRestartAsk(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{t("loov.apps.restartTitle")}</DialogTitle>
-            <DialogDescription>{t("loov.apps.restartDesc")}</DialogDescription>
+            <DialogTitle>{t("loov.apps.restartTitle", { name: restartAsk ? NAME[restartAsk] : "" })}</DialogTitle>
+            <DialogDescription>{t("loov.apps.restartDesc", { name: restartAsk ? NAME[restartAsk] : "" })}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="neutral" onClick={() => setRestartAsk(false)}>
+            <Button variant="neutral" onClick={() => setRestartAsk(null)}>
               {t("loov.apps.restartLater")}
             </Button>
             <Button
               variant="solid"
               onClick={() => {
-                setRestartAsk(false);
-                void launch("claude-desktop", true);
+                const id = restartAsk;
+                setRestartAsk(null);
+                if (id) void launch(id, true);
               }}
             >
               {t("loov.apps.restartNow")}
@@ -242,6 +248,7 @@ interface AppTileProps {
   modelOptions?: string[];
   onModelChange?: (model: string) => void;
   note?: string;
+  installHint?: string;
 }
 
 function AppTile({
@@ -255,6 +262,7 @@ function AppTile({
   modelOptions,
   onModelChange,
   note,
+  installHint,
 }: AppTileProps) {
   const { t } = useTranslation();
   const name = NAME[id];
@@ -320,6 +328,9 @@ function AppTile({
           {line}
         </div>
       </div>
+      {busy?.kind === "install" && installHint && (
+        <p className="pointer-events-none relative mt-2 text-caption leading-snug text-fg-3">{installHint}</p>
+      )}
       {installed && note && !busy && (
         <p className="pointer-events-none relative mt-2 text-caption leading-snug text-fg-3">{note}</p>
       )}

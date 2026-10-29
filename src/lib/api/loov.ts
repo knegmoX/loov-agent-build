@@ -18,7 +18,30 @@ export type LoovStatus =
       nodes: string[];
       route: "direct" | "proxy";
       via: string | null;
+      net: LoovNetView;
     };
+
+/** 网络模式：仅 Loov 应用走通道 / 国外网站走通道 / 全部走通道 */
+export type LoovNetMode = "direct" | "rule" | "global";
+
+export interface LoovNodeView {
+  id: string;
+  name: string;
+  latency_ms: number | null;
+  error: string | null;
+}
+
+export interface LoovNetView {
+  nodes: LoovNodeView[];
+  active: string | null;
+  /** 手选的节点；null = 自动 */
+  pinned: string | null;
+  /** 手选的节点不可用，这次回到了自动 */
+  pin_fallback: boolean;
+  mode: LoovNetMode;
+  sys_proxy: string | null;
+  sys_error: string | null;
+}
 
 export interface LoovAccount {
   username: string;
@@ -143,6 +166,8 @@ export const loovApi = {
   appInstall: (id: LoovAppId) => invoke<void>("loov_app_install", { id }),
   appLaunch: (id: LoovAppId, restart = false) => invoke<void>("loov_app_launch", { id, restart }),
   appSetModel: (id: LoovAppId, model: string) => invoke<void>("loov_app_set_model", { id, model }),
+  setNode: (node: string | null) => invoke<LoovStatus>("loov_set_node", { node }),
+  setNetMode: (mode: LoovNetMode) => invoke<LoovStatus>("loov_set_net_mode", { mode }),
 };
 
 /** 比较点分版本号（只看数字段，缺省按 0）：a<b 返回负数，相等 0，a>b 正数。 */

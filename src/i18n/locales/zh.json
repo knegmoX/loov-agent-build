@@ -4148,7 +4148,10 @@
       "pi": "通过 npm 安装",
       "mcode": "安装时运行官方安装脚本，失败时改用 npm",
       "agy": "安装时运行官方安装脚本"
-    }
+    },
+    "codexDesktop": "Codex 桌面版",
+    "installed": "已安装",
+    "launch": "启动"
   },
   "appPage": {
     "moreActions": "{{name}} 的更多操作",
@@ -4931,8 +4934,8 @@
       "launched": "已打开 {{name}}",
       "installed": "{{name}} 已安装",
       "getNode": "下载 Node.js",
-      "restartTitle": "重启 Claude Desktop？",
-      "restartDesc": "Claude Desktop 正在运行，重启后它的对话才会改走 Loov 统一计费。正在输入、还没发送的内容可能丢失。",
+      "restartTitle": "重启 {{name}}？",
+      "restartDesc": "{{name}} 正在运行，重启后它的对话才会改走 Loov 统一计费。正在输入、还没发送的内容可能丢失。",
       "restartLater": "稍后",
       "restartNow": "立即重启",
       "downloading": "下载中 {{percent}}%",
@@ -4949,8 +4952,33 @@
       "installAria": "安装 {{name}}",
       "install": "安装",
       "modelFor": "{{name}} 的默认模型",
-      "hint": "也可以在任意终端直接运行 claude 或 codex，同样经 Loov 计费。",
-      "codexDesktopNote": "与 Codex 共用模型。登录免费 ChatGPT 账号后，可在桌面版里切换公司模型"
+      "hint": "卡片上的下拉是默认模型；在各应用里也能切换 Loov 的全部模型（Claude Code / Codex / Grok 用 /model，Claude Desktop、Codex 桌面版用模型菜单）。也可以在任意终端直接运行 claude 或 codex，同样经 Loov 计费。",
+      "codexDesktopNote": "与 Codex 共用默认模型，可在桌面版的模型选择器里切换公司模型",
+      "bigDownload": "安装包约 1GB，首次安装较慢，请耐心等待",
+      "desktopNote": "在 Desktop 的模型菜单里可选 Loov 的全部模型"
+    },
+    "backToSimple": "返回简洁模式",
+    "net": {
+      "pickNode": "选择节点",
+      "auto": "自动（选最快的）",
+      "autoWith": "自动 · {{node}}",
+      "unavailable": "不可用",
+      "pinFallback": "所选节点当前不可用，已回到自动选择",
+      "mode": "网络模式",
+      "modes": {
+        "direct": "直连",
+        "rule": "代理",
+        "global": "全局"
+      },
+      "modeHint": {
+        "direct": "只有 Loov 启动的应用走安全通道，其他上网不受影响",
+        "rule": "国外网站走安全通道，国内网站直连",
+        "global": "除内网外，所有上网都走安全通道"
+      },
+      "sysError": "设置系统代理失败：{{error}}",
+      "ackTitle": "接管系统代理？",
+      "ackDesc": "代理和全局模式会把系统代理指向 Loov 的安全通道，浏览器等应用上网都会经过公司节点。切回直连、断开或退出 Loov 时，会还原成你原来的设置。",
+      "ackOk": "继续"
     }
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "loov-agent",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Loov Agent: 内部统一 AI 编程客户端（基于 CC Switch，MIT）",
   "type": "module",
   "scripts": {

@@ -384,7 +384,7 @@ pub async fn restore_original(state: &AppState) -> Result<RestoreReport, String>
     } else {
         super::flows::shutdown().await;
     }
-    // Claude Desktop、Grok Build 由 Loov 页启动时接入路由；退出路由即回到原来的模式
+    // Claude Desktop、Grok Build 由 Loov 页启动时接入路由；退出代理模式（路由 / 聚合）即回到原来的模式
     for app in [AppType::Claude, AppType::Codex, AppType::ClaudeDesktop, AppType::GrokBuild] {
         if crate::mode::current::is_proxy(&app) {
             if let Err(e) = crate::mode::controller::exit(state, &app).await {
@@ -408,6 +408,16 @@ pub async fn restore_original(state: &AppState) -> Result<RestoreReport, String>
     }
     if let Err(e) = state.db.delete_provider(AppType::GrokBuild.as_str(), super::provision::GROK_PROVIDER_ID) {
         log::warn!("[loov] 删除 Grok Build 的 Loov 供应商失败: {e}");
+    }
+    if let Err(e) = super::provision::remove_grok_models(&state.db) {
+        log::warn!("[loov] 删除 Grok 的 Loov 模型表失败: {e}");
+    }
+    // 聚合成员：先移出名单（已退出代理模式，只改登记）再删行，员工以后自己用聚合时不会带上空成员
+    for m in &super::provision::MEMBERS {
+        let _ = crate::mode::controller::set_stack_member(state, &m.app, m.id, false).await;
+        if let Err(e) = state.db.delete_provider(m.app.as_str(), m.id) {
+            log::warn!("[loov] 删除聚合成员 {} 失败: {e}", m.id);
+        }
     }
     local_auth::disable();
     if state.db.get_global_proxy_url().ok().flatten().as_deref() == Some(BLACKHOLE_PROXY) {

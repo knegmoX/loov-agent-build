@@ -45,6 +45,7 @@ import { HoverTip } from "@/components/ui/hover-tip";
 import { DRAG_REGION_ATTR, DRAG_REGION_STYLE, isMac } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { useLoovManagedFlag } from "@/lib/loovManaged";
+import { LoovWordmark } from "@/components/loov/LoovWordmark";
 import ccswitchLogo from "@/assets/icons/logo.svg";
 import { APP_DISPLAY_NAME, AppGlyph } from "./AppGlyph";
 
@@ -156,8 +157,8 @@ function SidebarTopBar({
             draggable={false}
             className="pointer-events-none h-5 w-5 shrink-0"
           />
-          <span className="pointer-events-none me-auto min-w-0 truncate text-strong font-semibold text-fg-1">
-            Loov Agent
+          <span className="pointer-events-none me-auto min-w-0 truncate">
+            <LoovWordmark className="text-[17px]" />
           </span>
           {toggleButton}
         </div>
@@ -201,8 +202,8 @@ function SidebarTopBar({
             draggable={false}
             className="h-[22px] w-[22px] shrink-0"
           />
-          <span className="truncate text-strong font-semibold text-fg-1">
-            Loov Agent
+          <span className="truncate">
+            <LoovWordmark className="text-[17px]" />
           </span>
         </span>
       )}
@@ -278,9 +279,22 @@ function MainDirectory({
     trailingLabel?: string;
     alert?: string;
     labelClassName?: string;
+    labelSuffix?: React.ReactNode;
+    title?: string;
   }[] = [
-    // loov: 账号 / 隧道页置顶，品牌名用渐变字
-    { page: "loov", label: "Loov Agent", icon: LoovMark, labelClassName: "loov-gradient-text font-semibold" },
+    // loov: 置顶，品牌渐变字 + 醒目的叹号；点它回简洁模式（App.tsx openPageFromNav）
+    {
+      page: "loov",
+      label: "Loov Agent Hub",
+      icon: LoovMark,
+      labelClassName: "loov-gradient-text font-semibold",
+      labelSuffix: (
+        <span aria-hidden="true" className="loov-bang">
+          !
+        </span>
+      ),
+      title: t("loov.backToSimple"),
+    },
     { page: "mcp", label: "MCP", icon: Server },
     { page: "skills", label: "Skills", icon: SkillsIcon },
     { page: "prompts", label: t("nav.prompts"), icon: BookOpen },
@@ -350,6 +364,8 @@ function MainDirectory({
             trailingLabel={item.trailingLabel}
             alert={item.alert}
             labelClassName={item.labelClassName}
+            labelSuffix={item.labelSuffix}
+            title={item.title}
             onClick={() => onSelectPage(item.page)}
           />
         ))}
@@ -552,6 +568,7 @@ function NavItem({
   dotTone = "neutral",
   endDot = false,
   labelClassName,
+  labelSuffix,
   onClick,
 }: {
   collapsed: boolean;
@@ -560,8 +577,10 @@ function NavItem({
   selected: boolean;
   icon: IconComponent;
   label: string;
-  /** loov: 名字的额外样式（Loov Agent 的品牌渐变字） */
+  /** loov: 名字的额外样式（Loov Agent Hub 的品牌渐变字） */
   labelClassName?: string;
+  /** loov: 紧跟名字的装饰（Loov Agent Hub 的叹号），不随名字截断 */
+  labelSuffix?: React.ReactNode;
   title?: string;
   /** 行尾的小字；放不下时在空格处折成两行，给数组时直接上下排 */
   trailing?: string | string[];
@@ -663,7 +682,14 @@ function NavItem({
       >
         {glyph(18)}
         {trailingLines.length === 0 ? (
-          <span className={cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</span>
+          labelSuffix ? (
+            <span className="flex min-w-0 flex-1 items-baseline">
+              <span className={cn("min-w-0 truncate", labelClassName)}>{label}</span>
+              {labelSuffix}
+            </span>
+          ) : (
+            <span className={cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</span>
+          )
         ) : (
           <>
             {/* 有行尾小字时名字不让：放不下就让小字折行（两行正好塞进 28px 的行高） */}

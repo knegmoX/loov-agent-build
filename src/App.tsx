@@ -736,6 +736,11 @@ function App() {
       return;
     }
     if (page === "usage") setUsageAppFilter("all");
+    // loov: 侧栏「Loov Agent Hub!」= 回简洁模式
+    if (page === "loov") {
+      setLoovAdvanced(false);
+      return;
+    }
     openPage(page);
   };
 
@@ -1551,7 +1556,8 @@ function App() {
           <LoovPage
             onToggleAdvanced={() => {
               setLoovAdvanced(true);
-              setCurrentView("loov");
+              // loov: Loov 的内容就是简洁页，高级模式直接进当前应用的供应商页（侧栏「Loov Agent Hub!」回简洁页）
+              setCurrentView("providers");
             }}
           />
         </div>

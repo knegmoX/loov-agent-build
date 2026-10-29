@@ -10,7 +10,7 @@ const buttonVariants = cva(
       variant: {
         // 旧变体都映射到 v7 的样式（不再有蓝色 / 绿色按钮）
         default:
-          "border border-transparent bg-action font-semibold text-action-fg hover:bg-action-hover",
+          "loov-btn border border-transparent bg-action font-semibold text-action-fg hover:bg-action-hover",
         destructive:
           "border border-transparent bg-danger text-white hover:brightness-110",
         outline:
@@ -22,8 +22,9 @@ const buttonVariants = cva(
         // ── v7（tokens.css 的 btn-*）：一个视图只有一个实心按钮，其余用 neutral ──
         // 中性实心：页头主操作（操作色，以后的主题色只改这一组变量）
         // 主题色白字对比度偏低，统一 600 字重
+        // loov：主按钮叠 web 的品牌渐变（.loov-btn，index.css）
         solid:
-          "border border-transparent bg-action font-semibold text-action-fg hover:bg-action-hover",
+          "loov-btn border border-transparent bg-action font-semibold text-action-fg hover:bg-action-hover",
         // 中性描边：卡片上的「切换」「添加」「设为默认」等
         neutral:
           "border border-border-strong bg-surface text-fg-1 hover:bg-subtle disabled:opacity-100 disabled:border-border disabled:bg-transparent disabled:text-fg-3",

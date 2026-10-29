@@ -133,10 +133,11 @@ pub async fn status(state: &AppState) -> Vec<LoovAppStatus> {
                     LoovAppStatus { id: app.id(), supported: true, installed, version, model }
                 }
                 None => {
-                    let found = desktop::detect(desktop::spec(app));
+                    let spec = desktop::spec(app);
+                    let found = desktop::detect(spec);
                     LoovAppStatus {
                         id: app.id(),
-                        supported: desktop::SUPPORTED,
+                        supported: desktop::supported(spec),
                         installed: found.is_some(),
                         version: found.and_then(|f| f.version),
                         model: None,
@@ -164,10 +165,14 @@ pub async fn install(handle: AppHandle, id: &str) -> Result<(), LoovError> {
         }
         None => {
             let spec = desktop::spec(app);
-            if !desktop::SUPPORTED {
-                return Err(app_error("UNSUPPORTED", format!("{} 暂不支持 Linux", spec.name)));
+            if !desktop::supported(spec) {
+                return Err(app_error("UNSUPPORTED", format!("{} 暂不支持本机", spec.name)));
             }
             desktop::install(spec, &handle, proxy.as_deref()).await?;
+            // 安装器说装好了不算数，要能检测到（检测不到时启动也会失败）
+            if tokio::task::spawn_blocking(move || desktop::detect(spec).is_none()).await.unwrap_or(true) {
+                return Err(app_error("INSTALL_FAILED", format!("{} 安装后没有检测到，请重试或手动安装", spec.name)));
+            }
         }
     }
     emit(&handle, app, "done", Some(100.0));
@@ -209,6 +214,10 @@ pub async fn launch(state: &AppState, id: &str, restart: bool) -> Result<(), Loo
 /// Grok Build：进路由模式（写 ~/.grok/config.toml）后在终端里跑 `grok`。
 async fn launch_grok(state: &AppState, proxy: &str, home: &Path) -> Result<(), LoovError> {
     super::provision::attach_grok(state).await?;
+    // 选择器里列出 Loov 的其余模型；写不进去不拦着启动（员工仍能用 Loov 页选的那个）
+    if let Err(e) = super::provision::sync_grok_models(state) {
+        log::error!("[loov] 写 Grok 的模型表失败：{e}");
+    }
     let env = vec![
         // 模型以外的外连也走隧道；本地路由不经代理
         ("HTTPS_PROXY", Some(proxy.to_string())),
@@ -342,13 +351,23 @@ mod desktop {
         /// macOS：/Applications 下的 .app 名（按顺序找）
         #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
         mac_apps: &'static [&'static str],
+        /// macOS：认这个 bundle id。.app 同名不同应用（旧版 ChatGPT 也叫 ChatGPT.app）时靠它区分
         #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
         mac_bundle_id: &'static str,
-        /// Windows：MSIX 包名与发布者的通配
+        /// macOS：官方只发 Apple 芯片版本
+        #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+        mac_arm_only: bool,
+        /// Windows：MSIX 包名（可带通配）与发布者的通配（None 表示包名已足够唯一）
         #[cfg_attr(not(windows), allow(dead_code))]
         win_name: &'static str,
         #[cfg_attr(not(windows), allow(dead_code))]
-        win_publisher: &'static str,
+        win_publisher: Option<&'static str>,
+        /// Windows：官方 MSIX 下载地址，`{arch}` 换成 x64 / arm64
+        #[cfg_attr(not(windows), allow(dead_code))]
+        win_msix: &'static str,
+        /// Windows：微软商店的产品 ID（有就先用 winget 从商店装）
+        #[cfg_attr(not(windows), allow(dead_code))]
+        win_store_id: Option<&'static str>,
         /// Windows 旧版非 MSIX 安装：(%LOCALAPPDATA% 下的目录, exe)
         #[cfg_attr(not(windows), allow(dead_code))]
         win_legacy: Option<(&'static str, &'static str)>,
@@ -359,22 +378,55 @@ mod desktop {
         name: "Claude Desktop",
         mac_apps: &["Claude.app"],
         mac_bundle_id: "com.anthropic.claudefordesktop",
+        mac_arm_only: false,
         win_name: "*Claude*",
-        win_publisher: "*Anthropic*",
+        win_publisher: Some("*Anthropic*"),
+        win_msix: "https://claude.ai/api/desktop/win32/{arch}/msix/latest/redirect",
+        win_store_id: None,
         win_legacy: Some(("AnthropicClaude", "claude.exe")),
     };
 
-    /// Codex 桌面版就是 ChatGPT 桌面 App 的 Codex 模式（旧版叫 Codex.app），和 Codex 命令行共用
+    /// Codex 桌面版：OpenAI 现在的桌面 App（名字叫 ChatGPT，内含 Codex 模式），和 Codex 命令行共用
     /// `~/.codex/config.toml`，登录时 Loov 写好的路由对它同样生效。
+    /// - Windows：商店里上架名是 ChatGPT（9PLM9XGG6VKS），装下来的 MSIX 包名是 `OpenAI.Codex`。
+    /// - macOS：`ChatGPT.app`，bundle id `com.openai.codex`；旧版 ChatGPT（`com.openai.chat`）不读
+    ///   config.toml，不算。官方只有 Apple 芯片版本。
     pub const CODEX: Spec = Spec {
         app: App::CodexDesktop,
         name: "Codex 桌面版",
         mac_apps: &["ChatGPT.app", "Codex.app"],
-        mac_bundle_id: "com.openai.chat",
-        win_name: "*ChatGPT*",
-        win_publisher: "*OpenAI*",
+        mac_bundle_id: "com.openai.codex",
+        mac_arm_only: true,
+        win_name: "OpenAI.Codex",
+        win_publisher: None,
+        win_msix: "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-{arch}.msix",
+        win_store_id: Some("9PLM9XGG6VKS"),
         win_legacy: None,
     };
+
+    /// 本机能不能装这个应用：Linux 都不行；Intel Mac 装不了只有 Apple 芯片版本的应用。
+    pub fn supported(spec: &Spec) -> bool {
+        if !SUPPORTED {
+            return false;
+        }
+        #[cfg(target_os = "macos")]
+        if spec.mac_arm_only && !is_apple_silicon() {
+            return false;
+        }
+        let _ = spec;
+        true
+    }
+
+    /// 按硬件判断（x86_64 版 Loov 在 Rosetta 下运行时也能认出 Apple 芯片）。
+    #[cfg(target_os = "macos")]
+    fn is_apple_silicon() -> bool {
+        cfg!(target_arch = "aarch64")
+            || std::process::Command::new("sysctl")
+                .args(["-n", "hw.optional.arm64"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+                .unwrap_or(false)
+    }
 
     pub fn spec(app: App) -> &'static Spec {
         match app {
@@ -408,17 +460,22 @@ mod desktop {
             .mac_apps
             .iter()
             .flat_map(|name| [PathBuf::from("/Applications").join(name), home_apps.join(name)])
-            .find(|p| p.join("Contents").is_dir())?;
-        let version = std::process::Command::new("defaults")
+            .find(|p| p.join("Contents").is_dir() && plist_value(p, "CFBundleIdentifier").as_deref() == Some(spec.mac_bundle_id))?;
+        let version = plist_value(&app, "CFBundleShortVersionString");
+        Some(Found { kind: Kind::MacApp(app), version })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn plist_value(app: &Path, key: &str) -> Option<String> {
+        std::process::Command::new("defaults")
             .arg("read")
             .arg(app.join("Contents").join("Info"))
-            .arg("CFBundleShortVersionString")
+            .arg(key)
             .output()
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|s| !s.is_empty());
-        Some(Found { kind: Kind::MacApp(app), version })
+            .filter(|s| !s.is_empty())
     }
 
     #[cfg(target_os = "macos")]
@@ -426,9 +483,9 @@ mod desktop {
         let client = http_client(spec, proxy)?;
         let tmp = tempfile::Builder::new().prefix("loov-desktop-").tempdir().map_err(io_error)?;
         if spec.app == App::CodexDesktop {
-            // ChatGPT 官方 dmg：挂载后把 ChatGPT.app 拷进应用程序目录
+            // 官方 dmg（约 800MB，只有 Apple 芯片版本）：挂载后把 ChatGPT.app 拷进应用程序目录
             let dmg = tmp.path().join("ChatGPT.dmg");
-            download(spec, handle, &client, "https://persistent.oaistatic.com/sidekick/public/ChatGPT.dmg", &dmg).await?;
+            download(spec, handle, &client, "https://persistent.oaistatic.com/codex-app-prod/ChatGPT.dmg", &dmg).await?;
             super::emit(handle, spec.app, "install", None);
             let mnt = tmp.path().join("mnt");
             let out = tokio::process::Command::new("hdiutil")
@@ -538,13 +595,14 @@ mod desktop {
             .output()
     }
 
-    /// 找发布者匹配的 MSIX 包：`$p`（找不到为 $null）。
+    /// 找 MSIX 包：`$p`（找不到为 $null）。
     #[cfg(windows)]
     fn find_package_ps(spec: &Spec) -> String {
-        format!(
-            "$p = Get-AppxPackage -Name '{}' | Where-Object {{ $_.Publisher -like '{}' }} | Select-Object -First 1; ",
-            spec.win_name, spec.win_publisher
-        )
+        let publisher = spec
+            .win_publisher
+            .map(|p| format!(" | Where-Object {{ $_.Publisher -like '{p}' }}"))
+            .unwrap_or_default();
+        format!("$p = Get-AppxPackage -Name '{}'{publisher} | Select-Object -First 1; ", spec.win_name)
     }
 
     #[cfg(windows)]
@@ -570,15 +628,23 @@ mod desktop {
 
     #[cfg(windows)]
     pub async fn install(spec: &'static Spec, handle: &AppHandle, proxy: Option<&str>) -> Result<(), LoovError> {
-        if spec.app == App::CodexDesktop {
-            return install_from_store(spec, handle, proxy).await;
+        if let Some(store_id) = spec.win_store_id {
+            if install_from_store(spec, handle, store_id).await {
+                return Ok(());
+            }
+            log::info!("[loov] {} 经微软商店没装上，改为经安全通道下载官方 MSIX", spec.name);
         }
-        // Claude：官方 MSIX，下载后 Add-AppxPackage（按用户安装，不需要管理员）
+        install_msix(spec, handle, proxy).await
+    }
+
+    /// 官方 MSIX，下载后 Add-AppxPackage（按用户安装，不需要管理员）。
+    #[cfg(windows)]
+    async fn install_msix(spec: &'static Spec, handle: &AppHandle, proxy: Option<&str>) -> Result<(), LoovError> {
         let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
         let client = http_client(spec, proxy)?;
-        let url = format!("https://claude.ai/api/desktop/win32/{arch}/msix/latest/redirect");
+        let url = spec.win_msix.replace("{arch}", arch);
         let tmp = tempfile::Builder::new().prefix("loov-desktop-").tempdir().map_err(io_error)?;
-        let msix = tmp.path().join("Claude.msix");
+        let msix = tmp.path().join("app.msix");
         download(spec, handle, &client, &url, &msix).await?;
         super::emit(handle, spec.app, "install", None);
         let path = msix.to_string_lossy().replace('\'', "''");
@@ -596,39 +662,53 @@ mod desktop {
         Ok(())
     }
 
-    /// ChatGPT（Codex 桌面版）只在微软商店发布（9PLM9XGG6VKS）：先用 winget 静默装；没有 winget
-    /// 或失败时下载商店的网页安装器打开商店页，等员工点完安装（最多 10 分钟，期间轮询是否装好）。
+    /// 先用 winget 从微软商店静默装（走微软 CDN，国内一般比经节点快）。成败以「检测到包」为准，
+    /// 不看 winget 的退出码；每 3 秒查一次，装好就结束。没有 winget、失败或超过 20 分钟返回 false，
+    /// 由调用方改走 MSIX。
     #[cfg(windows)]
-    async fn install_from_store(spec: &'static Spec, handle: &AppHandle, proxy: Option<&str>) -> Result<(), LoovError> {
-        use std::os::windows::process::CommandExt;
-        const STORE_ID: &str = "9PLM9XGG6VKS";
+    async fn install_from_store(spec: &'static Spec, handle: &AppHandle, store_id: &str) -> bool {
+        const LIMIT: Duration = Duration::from_secs(20 * 60);
         super::emit(handle, spec.app, "install", None);
-        let winget = tokio::task::spawn_blocking(|| {
-            std::process::Command::new("winget")
-                .args(["install", "--id", STORE_ID, "-s", "msstore", "--silent",
-                       "--accept-package-agreements", "--accept-source-agreements"])
-                .creation_flags(CREATE_NO_WINDOW)
-                .output()
-        })
-        .await
-        .ok()
-        .and_then(Result::ok);
-        if winget.as_ref().is_some_and(|o| o.status.success()) || detect(spec).is_some() {
-            return Ok(());
-        }
-        let client = http_client(spec, proxy)?;
-        let tmp = tempfile::Builder::new().prefix("loov-desktop-").tempdir().map_err(io_error)?;
-        let exe = tmp.path().join("ChatGPT-Store-Installer.exe");
-        download(spec, handle, &client, &format!("https://get.microsoft.com/installer/download/{STORE_ID}"), &exe).await?;
-        super::emit(handle, spec.app, "install", None);
-        std::process::Command::new(&exe).spawn().map_err(io_error)?;
-        for _ in 0..200 {
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            if tokio::task::spawn_blocking(move || detect(spec).is_some()).await.unwrap_or(false) {
-                return Ok(());
+        let mut child = match tokio::process::Command::new("winget")
+            .args(["install", "--id", store_id, "-s", "msstore", "--silent",
+                   "--accept-package-agreements", "--accept-source-agreements"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                log::info!("[loov] 没有可用的 winget：{e}");
+                return false;
+            }
+        };
+        let installed = || async { tokio::task::spawn_blocking(move || detect(spec).is_some()).await.unwrap_or(false) };
+        let started = std::time::Instant::now();
+        loop {
+            match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
+                // winget 结束了：最后再认一次包（退出码 0 也可能没装上）
+                Ok(status) => {
+                    let ok = installed().await;
+                    if !ok {
+                        log::warn!("[loov] winget 结束（{status:?}）但没有检测到 {}", spec.name);
+                    }
+                    return ok;
+                }
+                Err(_) => {
+                    if installed().await {
+                        // 包已注册，winget 可能还在收尾，不必等它
+                        return true;
+                    }
+                    if started.elapsed() > LIMIT {
+                        log::warn!("[loov] winget 安装 {} 超过 20 分钟，放弃", spec.name);
+                        let _ = child.kill().await;
+                        return false;
+                    }
+                }
             }
         }
-        Err(app_error("INSTALL_FAILED", "没有等到 ChatGPT 安装完成，请在微软商店里装好后再点一次"))
     }
 
     /// 按安装目录找进程（MSIX 的 exe 名各版本可能不同）；旧版按 exe 名。

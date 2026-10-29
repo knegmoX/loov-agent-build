@@ -24,7 +24,7 @@ xAI 没有 Windows/macOS 桌面版 Grok（只有手机 App），桌面上只有 
 | Grok Build | 启动时进入 Grok 的路由模式（`provision::attach_grok`）。`loov-grok` 供应商写一张模型表 `loov`，`~/.grok/config.toml` 指向本地路由 `/grokbuild/v1`，令牌是 `lat_` | `grok` → 本地路由 `/grokbuild/v1/responses` → 隧道 → new-api。选 Claude / GPT 时走 new-api 原生 `/v1/responses`；选 Gemini 时供应商标成 `openai_chat`，由本地路由转成 Chat Completions（new-api 的 Gemini 不支持 responses） |
 | Claude Desktop | 第一次从启动台启动时进入 Desktop 的路由模式（`provision::attach_desktop`），写 3p 网关配置，指向本地路由 `/claude-desktop`，带本地网关 token | Desktop → 本地路由 `/claude-desktop/v1/messages` → 隧道 → new-api |
 
-| Codex 桌面版 | 和 Codex 命令行共用 `~/.codex/config.toml`，登录时 Loov 已写好路由，不需要额外配置。正在运行时同样会询问是否重启 | 桌面版 → 本地路由 `/v1/responses` → 隧道 → new-api。没登录官方 ChatGPT 账号时，桌面版的模型选择器只能选官方默认模型（new-api 上没有），forwarder 用 `provision::coerce_codex_model` 把不在 Loov 目录里的模型换成员工选的 Codex 模型；登录免费 ChatGPT 账号后，可以在桌面版里自己切换公司模型 |
+| Codex 桌面版 | 和 Codex 命令行共用 `~/.codex/config.toml`，登录时 Loov 已写好路由，不需要额外配置。正在运行时同样会询问是否重启 | 桌面版 → 本地路由 `/v1/responses` → 隧道 → new-api。0.1.8 起 Loov 写 `model_catalog_json`（见 dev-06），桌面版不登录 ChatGPT 也能在模型选择器里选公司模型；万一发来不在 Loov 目录里的模型，forwarder 用 `provision::coerce_codex_model` 换成员工选的 Codex 模型 |
 
 这些路径的上游 Key 都是占位（`LOOV_MANAGED`），由 forwarder 在内存里换成真实 Key（`provision::is_loov_provider` 认这四个供应商）。agy 把本地令牌放在 `x-goog-api-key` 头里，`local_auth::bearer_of` 已支持这个头。
 
@@ -39,7 +39,9 @@ Claude Desktop 正在运行时，配置要重启才生效：后端返回 `DESKTO
 - Claude Desktop 经隧道下载官方安装包：
   - macOS：从 `downloads.claude.ai/releases/darwin/universal/RELEASES.json` 取 zip，`ditto` 解到 `/Applications`；不可写时解到 `~/Applications`。
   - Windows：`claude.ai/api/desktop/win32/<arch>/msix/latest/redirect` 下载 MSIX，再用 `Add-AppxPackage` 按用户安装。
-  - Codex 桌面版（ChatGPT）：macOS 下载 `persistent.oaistatic.com/sidekick/public/ChatGPT.dmg`，挂载后拷 `ChatGPT.app`；Windows 只在微软商店（9PLM9XGG6VKS），先 `winget install -s msstore` 静默装，失败时打开商店网页安装器，轮询到装好为止。
+  - Codex 桌面版（OpenAI 现在的桌面 App，名字叫 ChatGPT）：
+    - macOS：下载 `persistent.oaistatic.com/codex-app-prod/ChatGPT.dmg`（只有 Apple 芯片版本），挂载后拷 `ChatGPT.app`，按 bundle id `com.openai.codex` 检测。
+    - Windows：商店 9PLM9XGG6VKS，包名 `OpenAI.Codex`。先用 winget 静默装（以检测到包为准，20 分钟超时），失败时经隧道下载官方 MSIX 再 `Add-AppxPackage`。详见 dev-06。
   - 桌面应用的检测、安装、运行检测、退出、启动都由 `apps::desktop::Spec` 描述，Claude Desktop 与 Codex 桌面版共用一套实现。
   - Linux 没有官方版，卡片置灰。
 - 隧道就绪时，上游「应用」页的安装 / 升级也带隧道代理（`apps::tunnel_proxy_env`）。Windows 的官方安装脚本（如 Codex 的 `irm https://chatgpt.com/codex/install.ps1 | iex`）跑在 PowerShell 5.1 里，`irm` 不读 `HTTPS_PROXY`，所以 `powershell_encoded_command` 统一加了前导，把环境里的代理设成 .NET 默认代理。国内直连 chatgpt.com 不通，没有这个前导就会报「无法连接到远程服务器」。

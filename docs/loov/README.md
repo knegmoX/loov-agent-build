@@ -11,6 +11,7 @@ Loov Agent 是 CC Switch（MIT）的内部 fork。员工安装后登录公司账
 | [dev-03-privacy-rectifier.md](dev-03-privacy-rectifier.md) | 隐私整流器：改写请求里的本机指纹 |
 | [dev-04-build-release.md](dev-04-build-release.md) | 多平台构建、xray 版本管理与发布 |
 | [dev-05-app-launcher.md](dev-05-app-launcher.md) | 启动台：Claude Code / Codex / Antigravity / Claude Desktop 一键启动与安装，全部经 new-api 计费 |
+| [dev-06-network-and-models.md](dev-06-network-and-models.md) | 节点选择、直连 / 代理 / 全局三种网络模式；每个 agent 都能在自己的模型选择器里选 Loov 的全部模型 |
 
 服务端 loov-hub 的接口契约见 hub 仓库的 `docs/API.md`。历史调研与测试报告放在服务器的 `/mnt/data/research/ccswitch/`：`REPORT.md` 是调研，`PLAN.md` 是最初的计划，`TEST_REPORT.md` 和 `M2_REPORT.md` 是测试与实施报告。
 

@@ -5,7 +5,10 @@
 //! （agy 放在 `x-goog-api-key` 头里，由 `require_bearer` 校验），真实 Key 由 forwarder 注入。
 //!
 //! agy 的模型表是它内置的（含 3.7 Flash、3.1 Pro 等），标题生成还会悄悄用
-//! `gemini-3.1-flash-lite-preview`。new-api 上没有的模型一律改成员工选的 Gemini 模型，免得 404。
+//! `gemini-3.1-flash-lite-preview`。agy 的 `/model` 也只能列出这张内置表，所以 new-api 上没有的模型
+//! 按档位换成 Loov 的：名字带 pro 的换成 Loov 的 Pro 档（非 Flash 的对话模型，如 gemini-4-argon），
+//! 带 flash 的换成 Loov 的 Flash；员工在 agy 里切 Pro / Flash 就真的换了模型。都认不出时用员工在
+//! Loov 页选的 Gemini，免得 404。
 
 use axum::http::Uri;
 
@@ -56,12 +59,26 @@ fn rewrite_model(path: &str, available: &[String], fallback: Option<&str>) -> (S
     let end = rest.find([':', '?', '/']).unwrap_or(rest.len());
     let model = &rest[..end];
     let keep = model.is_empty() || available.is_empty() || available.iter().any(|m| m == model);
-    match fallback {
-        Some(fb) if !keep => {
+    let target = if keep { None } else { same_tier(model, available).or(fallback) };
+    match target {
+        Some(fb) => {
             log::info!("[loov] agy 请求的模型 {model} 不在 Loov 目录，改用 {fb}");
             (format!("{}{}{}", &path[..start], fb, &rest[end..]), model.to_string(), fb.to_string())
         }
-        _ => (path.to_string(), model.to_string(), model.to_string()),
+        None => (path.to_string(), model.to_string(), model.to_string()),
+    }
+}
+
+/// agy 内置模型对应的 Loov 档位：带 pro 的 → 第一个非 Flash 的对话 Gemini；带 flash 的 → 名字最短的
+/// Flash（gemini-3.8-flash，而不是 -cyber / -search 变体）。
+fn same_tier<'a>(model: &str, available: &'a [String]) -> Option<&'a str> {
+    let agent = available.iter().filter(|m| super::provision::is_agent_gemini(m));
+    if model.contains("pro") {
+        agent.clone().find(|m| !m.contains("flash")).map(String::as_str)
+    } else if model.contains("flash") {
+        agent.filter(|m| m.contains("flash")).min_by_key(|m| m.len()).map(String::as_str)
+    } else {
+        None
     }
 }
 
@@ -70,7 +87,7 @@ mod tests {
     use super::*;
 
     fn avail() -> Vec<String> {
-        vec!["gemini-3.8-flash".into(), "gemini-4-argon".into()]
+        vec!["gemini-3.8-flash-cyber".into(), "gemini-3.8-flash".into(), "gemini-4-argon".into(), "gemini-embedding-001".into()]
     }
 
     #[test]
@@ -81,14 +98,21 @@ mod tests {
     }
 
     #[test]
-    fn rewrites_unknown_model_to_fallback() {
+    fn rewrites_unknown_model_by_tier() {
+        // agy 内置的 Flash（含标题用的 flash-lite）→ Loov 的 Flash，即使员工选的是 argon
         let (p, o, u) = rewrite_model(
             "/v1beta/models/gemini-3.1-flash-lite-preview:streamGenerateContent?alt=sse",
             &avail(),
-            Some("gemini-3.8-flash"),
+            Some("gemini-4-argon"),
         );
         assert_eq!(p, "/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse");
         assert_eq!(o, "gemini-3.1-flash-lite-preview");
+        assert_eq!(u, "gemini-3.8-flash");
+        // 内置的 Pro → Loov 的 Pro 档
+        let (_, _, u) = rewrite_model("/v1beta/models/gemini-3.1-pro:generateContent", &avail(), Some("gemini-3.8-flash"));
+        assert_eq!(u, "gemini-4-argon");
+        // 认不出档位 → 员工选的
+        let (_, _, u) = rewrite_model("/v1beta/models/gemini-ultra-x:generateContent", &avail(), Some("gemini-3.8-flash"));
         assert_eq!(u, "gemini-3.8-flash");
     }
 

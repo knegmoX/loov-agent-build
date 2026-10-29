@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowUpCircle,
@@ -10,6 +10,7 @@ import {
   LayoutGrid,
   Loader2,
   MoreHorizontal,
+  Play,
   RefreshCw,
   Trash2,
 } from "lucide-react";
@@ -21,6 +22,9 @@ import { DEFAULT_VISIBLE_APPS } from "@/config/appConfig";
 import { useSettings } from "@/hooks/useSettings";
 import { isUpdateAvailable } from "@/lib/version";
 import { cn } from "@/lib/utils";
+import { toast } from "@/lib/toast";
+import { loovApi, parseLoovError, type LoovAppId, type LoovAppStatus } from "@/lib/api/loov";
+import { loovKeys, useLoovApps } from "@/lib/query/loov";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { HelpTip } from "@/components/ui/help-tip";
@@ -78,11 +82,16 @@ const SOURCE_LABEL: Record<string, string> = {
   pip: "pip",
 };
 
-type Row = { kind: "tool"; tool: ToolName } | { kind: "desktop" };
+type Row =
+  | { kind: "tool"; tool: ToolName }
+  | { kind: "desktop" }
+  | { kind: "codexDesktop" };
 
 const ROWS: Row[] = [
   { kind: "tool", tool: "claude" },
   { kind: "desktop" },
+  // loov: Codex 桌面版（OpenAI 桌面 App）没有命令行，单列一行；安装 / 启动走 Loov 启动台的同一套后端
+  { kind: "codexDesktop" },
   ...TOOL_NAMES.filter((tool) => tool !== "claude").map(
     (tool): Row => ({ kind: "tool", tool }),
   ),
@@ -154,6 +163,8 @@ export function AppsPage() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tools.toolDiagnostics]);
+  const { data: loovAppList } = useLoovApps(true);
+  const loovApps = new Map((loovAppList ?? []).map((a) => [a.id, a]));
   const { data: desktopStatus } = useQuery({
     queryKey: ["claude-desktop-status"],
     queryFn: () => providersApi.getClaudeDesktopStatus(),
@@ -348,7 +359,16 @@ export function AppsPage() {
 
           <div className="divide-y divide-border overflow-hidden rounded-panel border border-border bg-surface">
             {ROWS.map((row) =>
-              row.kind === "desktop" ? (
+              row.kind === "codexDesktop" ? (
+                <AppRow
+                  key="codex-desktop"
+                  app="codex"
+                  name={<span className="truncate">{t("appsPage.codexDesktop")}</span>}
+                  meta={<LoovDesktopMeta status={loovApps.get("codex-desktop")} />}
+                  action={<LoovDesktopAction id="codex-desktop" status={loovApps.get("codex-desktop")} />}
+                  visibility={<span />}
+                />
+              ) : row.kind === "desktop" ? (
                 <AppRow
                   key="claude-desktop"
                   app="claude-desktop"
@@ -372,6 +392,8 @@ export function AppsPage() {
                       </HelpTip>
                     </span>
                   }
+                  meta={<LoovDesktopMeta status={loovApps.get("claude-desktop")} />}
+                  action={<LoovDesktopAction id="claude-desktop" status={loovApps.get("claude-desktop")} />}
                   visibility={visibilitySwitch("claude-desktop")}
                 />
               ) : (
@@ -510,6 +532,62 @@ function AppRow({
       </div>
       {footer && <div className="ms-9 mt-2">{footer}</div>}
     </div>
+  );
+}
+
+/** loov：桌面应用是否已安装、版本（数据同启动台，`loov_apps_status`）。 */
+function LoovDesktopMeta({ status }: { status: LoovAppStatus | undefined }) {
+  const { t } = useTranslation();
+  if (!status) return null;
+  if (!status.supported) return <span>{t("loov.apps.unsupported")}</span>;
+  if (!status.installed) return <span>{t("loov.apps.notInstalled")}</span>;
+  return (
+    <span className="tabular-nums">
+      {t("appsPage.installed")}
+      {status.version ? ` · ${status.version}` : ""}
+    </span>
+  );
+}
+
+/** loov：桌面应用的安装 / 启动按钮。和启动台一样，启动前接入 Loov（经 new-api 计费）。 */
+function LoovDesktopAction({ id, status }: { id: LoovAppId; status: LoovAppStatus | undefined }) {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  if (!status?.supported) return null;
+  const run = async () => {
+    setBusy(true);
+    try {
+      if (status.installed) {
+        await loovApi.appLaunch(id, false);
+      } else {
+        await loovApi.appInstall(id);
+        await qc.invalidateQueries({ queryKey: loovKeys.apps });
+        toast.success(t("loov.apps.installed", { name: id === "codex-desktop" ? t("appsPage.codexDesktop") : APP_DISPLAY_NAME["claude-desktop"] }));
+      }
+    } catch (e) {
+      const err = parseLoovError(e);
+      if (err.code === "DESKTOP_RESTART_REQUIRED") {
+        // 应用开着、这次才接入 Loov：要重启才生效，由员工决定
+        toast.info(err.message, {
+          duration: 10_000,
+          action: {
+            label: t("loov.apps.restartNow"),
+            onClick: () => void loovApi.appLaunch(id, true).catch((x) => toast.error(parseLoovError(x).message)),
+          },
+        });
+      } else {
+        toast.error(err.message, { duration: 8_000 });
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Button variant="neutral" size="compact" disabled={busy} onClick={() => void run()}>
+      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : status.installed ? <Play className="h-3.5 w-3.5" /> : <Download className="h-3.5 w-3.5" />}
+      {status.installed ? t("appsPage.launch") : t("settings.toolInstall")}
+    </Button>
   );
 }
 

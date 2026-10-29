@@ -169,6 +169,7 @@ mod tests {
                 nodes: vec![],
                 route: crate::loov::tunnel::Route::Direct,
                 via: None,
+                net: Default::default(),
             }
         } else {
             Status::TunnelFailed { reason: "x".into() }

@@ -12,7 +12,7 @@ use crate::live::patch::KeyPath;
 use crate::mode::operation::{AppWrite, FileChange};
 use crate::mode::state::PendingTarget;
 use crate::provider::{
-    ClaudeDesktopMode, ClaudeDesktopModelRoute, ClaudeModelConfig, CodexModelConfig, GeminiModelConfig,
+    ClaudeDesktopMode, ClaudeDesktopModelRoute, ClaudeModelConfig, ClaudeStackModel, CodexModelConfig, GeminiModelConfig,
     Provider, ProviderMeta, UniversalProvider, UniversalProviderApps, UniversalProviderModels,
 };
 use crate::services::provider::{claude_direct, ProviderService};
@@ -23,6 +23,7 @@ use super::{BLACKHOLE_PROXY, KEY_PLACEHOLDER, PROVIDER_ID};
 
 /// 操作名（写进 pending 记录，便于排障）。
 const OP_HARDEN: &str = "loov.harden";
+const OP_GROK_MODELS: &str = "loov.grok-models";
 
 pub fn claude_child_id() -> String {
     format!("universal-claude-{PROVIDER_ID}")
@@ -50,6 +51,117 @@ pub fn is_loov_provider(provider_id: &str) -> bool {
         || provider_id == gemini_child_id()
         || provider_id == DESKTOP_PROVIDER_ID
         || provider_id == GROK_PROVIDER_ID
+        || MEMBERS.iter().any(|m| m.id == provider_id)
+}
+
+/// 聚合（Stack）成员：让每个 agent 自己的模型选择器里列出 Loov 的全部模型。主路由（Loov 子供应商）
+/// 只认一种协议，另外几家模型由这些成员承接，本地路由按成员的 `apiFormat` 转换协议，都发往 new-api：
+/// - Claude Code / Claude Desktop 说 Anthropic：GPT 走 new-api 原生 /v1/responses，Gemini 走
+///   /v1/chat/completions（new-api 的 Gemini 不支持 responses）。
+/// - Codex 说 Responses：GPT、Claude 由主路由直接发（new-api 原生 /v1/responses），Gemini 走 chat。
+pub struct Member {
+    pub id: &'static str,
+    pub app: AppType,
+    /// 承接哪一家的模型（`model_kind`）
+    pub kind: &'static str,
+    pub api_format: &'static str,
+    pub name: &'static str,
+    /// 内置图标名；也决定聚合 key（模型 id 里的 `ccs-claude-<key>--…`）
+    pub icon: &'static str,
+}
+
+pub const MEMBERS: [Member; 5] = [
+    Member { id: "loov-claude-gpt", app: AppType::Claude, kind: "openai", api_format: "openai_responses", name: "Loov GPT", icon: "openai" },
+    Member { id: "loov-claude-gemini", app: AppType::Claude, kind: "gemini", api_format: "openai_chat", name: "Loov Gemini", icon: "gemini" },
+    Member { id: "loov-codex-gemini", app: AppType::Codex, kind: "gemini", api_format: "openai_chat", name: "Loov Gemini", icon: "gemini" },
+    Member { id: "loov-desktop-gpt", app: AppType::ClaudeDesktop, kind: "openai", api_format: "openai_responses", name: "Loov GPT", icon: "openai" },
+    Member { id: "loov-desktop-gemini", app: AppType::ClaudeDesktop, kind: "gemini", api_format: "openai_chat", name: "Loov Gemini", icon: "gemini" },
+];
+
+/// 某一家的对话模型（Gemini 去掉向量、生图等专用模型），按 hub 目录顺序。
+pub fn models_of_kind(b: &Bootstrap, kind: &str) -> Vec<String> {
+    let ids: Vec<&str> = if b.model_catalog.is_empty() {
+        b.models.iter().map(String::as_str).collect()
+    } else {
+        b.model_catalog.iter().map(|m| m.id.as_str()).collect()
+    };
+    ids.into_iter()
+        .filter(|id| model_kind(b, id) == kind && (kind != "gemini" || is_agent_gemini(id)))
+        .map(str::to_string)
+        .collect()
+}
+
+/// 聚合成员的供应商行；这一家在 Loov 目录里没有模型时为 None（不加入聚合）。
+pub fn member_provider(b: &Bootstrap, m: &Member) -> Option<Provider> {
+    let models = models_of_kind(b, m.kind);
+    let first = models.first()?.clone();
+    let base = b.api.base_url.trim_end_matches('/');
+    let mut meta = ProviderMeta { api_format: Some(m.api_format.to_string()), ..Default::default() };
+    let settings = match m.app {
+        AppType::Codex => {
+            let v1 = if base.ends_with("/v1") { base.to_string() } else { format!("{base}/v1") };
+            let config = format!(
+                "model_provider = \"loov\"\nmodel = {model}\n\n[model_providers.loov]\nname = \"Loov\"\nbase_url = {base}\nwire_api = \"responses\"\nrequires_openai_auth = true\n",
+                model = toml_str(&first),
+                base = toml_str(&v1),
+            );
+            // 协议由 meta.apiFormat（openai_chat）决定；这份配置只用来生成聚合目录，不写进员工的 config.toml
+            let catalog: Vec<Value> = models.iter().map(|id| json!({ "model": id, "displayName": id })).collect();
+            json!({ "auth": { "OPENAI_API_KEY": KEY_PLACEHOLDER }, "config": config, "modelCatalog": { "models": catalog } })
+        }
+        _ => {
+            if m.app == AppType::ClaudeDesktop {
+                meta.claude_desktop_mode = Some(ClaudeDesktopMode::Proxy);
+                meta.claude_desktop_model_routes = models
+                    .iter()
+                    .map(|id| (id.clone(), ClaudeDesktopModelRoute { model: id.clone(), label_override: Some(id.clone()), supports_1m: None }))
+                    .collect();
+            } else {
+                meta.stack_models = Some(
+                    models.iter().map(|id| ClaudeStackModel { model: id.clone(), display_name: Some(id.clone()), one_m: false }).collect(),
+                );
+            }
+            json!({ "env": {
+                "ANTHROPIC_BASE_URL": base,
+                "ANTHROPIC_AUTH_TOKEN": KEY_PLACEHOLDER,
+                "ANTHROPIC_MODEL": first,
+            }})
+        }
+    };
+    let mut p = Provider::with_id(m.id.to_string(), m.name.to_string(), settings, Some(b.topup_url.clone()).filter(|s| !s.is_empty()));
+    p.category = Some("aggregator".to_string());
+    p.notes = Some("由 Loov Agent 管理：Key 不落盘，请勿手工编辑".to_string());
+    p.icon = Some(m.icon.to_string());
+    p.sort_index = Some(1);
+    p.meta = Some(meta);
+    Some(p)
+}
+
+/// 写入（或删掉不再有模型的）聚合成员行。
+fn save_members(state: &AppState, b: &Bootstrap) -> Result<(), AppError> {
+    for m in &MEMBERS {
+        match member_provider(b, m) {
+            Some(p) => state.db.save_provider(m.app.as_str(), &p)?,
+            None => {
+                let _ = state.db.delete_provider(m.app.as_str(), m.id);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 让 `app` 进入聚合模式：默认路由 `route`，成员按现有的行加入、没有行的移出。
+/// 已在聚合模式时只同步成员（每次变化会重写客户端配置）。
+async fn enter_stack(state: &AppState, app: &AppType, route: &str) -> Result<(), String> {
+    crate::mode::controller::enter_with_route(state, app, true, Some(route)).await?;
+    for m in MEMBERS.iter().filter(|m| &m.app == app) {
+        let exists = state.db.get_provider_by_id(m.id, app.as_str()).ok().flatten().is_some();
+        if let Err(e) = crate::mode::controller::set_stack_member(state, app, m.id, exists).await {
+            // 成员加不上不影响主路由：员工仍能用默认模型，只是选择器里少了这一家
+            log::error!("[loov] {} 聚合成员 {} 同步失败：{}", app.as_str(), m.id, e.message);
+        }
+    }
+    Ok(())
 }
 
 /// 能给 agy 当对话模型的 Gemini（排除向量、生图、语音等专用模型）。前端 `isAgentGemini` 同一规则。
@@ -68,33 +180,80 @@ pub struct ModelPick {
     pub gemini: Option<String>,
 }
 
+/// 模型属于哪一家：hub 目录里标了就用标的，否则按名字前缀猜。
+fn model_kind(b: &Bootstrap, id: &str) -> &'static str {
+    if let Some(m) = b.model_catalog.iter().find(|m| m.id == id) {
+        if !m.kind.is_empty() {
+            return match m.kind.as_str() {
+                "anthropic" => "anthropic",
+                "openai" => "openai",
+                "gemini" => "gemini",
+                _ => "other",
+            };
+        }
+    }
+    if id.starts_with("claude-") {
+        "anthropic"
+    } else if id.starts_with("gemini-") {
+        "gemini"
+    } else if id.starts_with("gpt-") || id.starts_with("codex") || id.chars().next() == Some('o') && id.chars().nth(1).is_some_and(|c| c.is_ascii_digit()) {
+        "openai"
+    } else {
+        "other"
+    }
+}
+
+/// Codex 能选的模型：GPT 在前，Claude 在后（new-api 原生 /v1/responses 都支持；Gemini 不支持）。
+/// 与前端启动台 Codex 下拉的列表一致。
+pub fn codex_models(b: &Bootstrap) -> Vec<String> {
+    let ids: Vec<&str> = if b.model_catalog.is_empty() {
+        b.models.iter().map(String::as_str).collect()
+    } else {
+        b.model_catalog.iter().map(|m| m.id.as_str()).collect()
+    };
+    let of = |kind: &str| ids.iter().filter(|id| model_kind(b, id) == kind).map(|s| s.to_string()).collect::<Vec<_>>();
+    [of("openai"), of("anthropic")].concat()
+}
+
+/// Codex 子供应商的模型目录（`modelCatalog.models`）。上游据此写 `model_catalog_json`：Codex 命令行
+/// 的 /model 与 Codex 桌面版的模型选择器都列出公司模型，桌面版不登录 ChatGPT 也能切换。
+fn codex_model_catalog(b: &Bootstrap) -> Option<Value> {
+    let models: Vec<Value> = codex_models(b)
+        .into_iter()
+        .map(|id| {
+            let mut row = json!({ "model": id, "displayName": id });
+            if model_kind(b, &id) == "anthropic" {
+                row["contextWindow"] = json!(200_000);
+            }
+            row
+        })
+        .collect();
+    (!models.is_empty()).then(|| json!({ "models": models }))
+}
+
+/// 把模型目录写进 Codex 子供应商。在 `sync_universal_to_apps` 之前调用：同步时子供应商的已有配置
+/// 与统一供应商合并（统一供应商不管 `modelCatalog`，保留这里写的），随后投影到 config.toml。
+fn seed_codex_catalog(state: &AppState, provider: &UniversalProvider, b: &Bootstrap) -> Result<(), AppError> {
+    let (Some(child), Some(catalog)) = (provider.to_codex_provider(), codex_model_catalog(b)) else {
+        return Ok(());
+    };
+    let mut row = state.db.get_provider_by_id(&child.id, AppType::Codex.as_str())?.unwrap_or(child);
+    if row.settings_config.get("modelCatalog") == Some(&catalog) {
+        return Ok(());
+    }
+    if let Some(obj) = row.settings_config.as_object_mut() {
+        obj.insert("modelCatalog".to_string(), catalog);
+    }
+    state.db.save_provider(AppType::Codex.as_str(), &row)
+}
+
 pub fn pick_models(b: &Bootstrap) -> ModelPick {
     let ids: Vec<&str> = if b.model_catalog.is_empty() {
         b.models.iter().map(String::as_str).collect()
     } else {
         b.model_catalog.iter().map(|m| m.id.as_str()).collect()
     };
-    let kind_of = |id: &str| -> &str {
-        if let Some(m) = b.model_catalog.iter().find(|m| m.id == id) {
-            if !m.kind.is_empty() {
-                return match m.kind.as_str() {
-                    "anthropic" => "anthropic",
-                    "openai" => "openai",
-                    "gemini" => "gemini",
-                    _ => "other",
-                };
-            }
-        }
-        if id.starts_with("claude-") {
-            "anthropic"
-        } else if id.starts_with("gemini-") {
-            "gemini"
-        } else if id.starts_with("gpt-") || id.starts_with("codex") || id.chars().next() == Some('o') && id.chars().nth(1).is_some_and(|c| c.is_ascii_digit()) {
-            "openai"
-        } else {
-            "other"
-        }
-    };
+    let kind_of = |id: &str| model_kind(b, id);
     let recommended = |kind: &str| -> Option<String> {
         b.model_catalog
             .iter()
@@ -180,8 +339,10 @@ pub fn universal_provider(b: &Bootstrap, existing: Option<&UniversalProvider>) -
 pub fn apply(state: &AppState, b: &Bootstrap) -> Result<(), AppError> {
     let existing = ProviderService::get_universal(state, PROVIDER_ID)?;
     let provider = universal_provider(b, existing.as_ref());
-    ProviderService::upsert_universal(state, provider)?;
+    ProviderService::upsert_universal(state, provider.clone())?;
+    seed_codex_catalog(state, &provider, b)?;
     ProviderService::sync_universal_to_apps(state, PROVIDER_ID)?;
+    save_members(state, b)?;
     if let Some(desktop) = desktop_provider(b) {
         state.db.save_provider(AppType::ClaudeDesktop.as_str(), &desktop)?;
     }
@@ -200,7 +361,7 @@ pub fn grok_provider(b: &Bootstrap, model: Option<&str>) -> Option<Provider> {
     let base = b.api.base_url.trim_end_matches('/');
     let base = if base.ends_with("/v1") { base.to_string() } else { format!("{base}/v1") };
     let config = format!(
-        "[models]\ndefault = \"loov\"\n\n[model.loov]\nname = \"Loov\"\nmodel = {model}\nbase_url = {base}\napi_key = {key}\napi_backend = \"responses\"\ncontext_window = 200000\n",
+        "[models]\ndefault = \"loov\"\n\n[model.loov]\nname = {model}\nmodel = {model}\nbase_url = {base}\napi_key = {key}\napi_backend = \"responses\"\ncontext_window = 200000\n",
         model = toml_str(model),
         base = toml_str(&base),
         key = toml_str(KEY_PLACEHOLDER),
@@ -270,6 +431,99 @@ pub async fn attach_grok(state: &AppState) -> Result<(), String> {
         return Ok(());
     }
     crate::mode::controller::enter_with_route(state, &AppType::GrokBuild, false, Some(GROK_PROVIDER_ID)).await
+}
+
+/// Grok Build 额外模型表的表名前缀（`[model.loov-<模型>]`）。主表 `[model.loov]` 由上游投影维护。
+const GROK_EXTRA_PREFIX: &str = "loov-";
+
+fn grok_table_key(model: &str) -> String {
+    let slug: String = model.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
+    format!("{GROK_EXTRA_PREFIX}{slug}")
+}
+
+/// Grok Build 额外模型表的内容：(表名, 显示名, 发出去的模型 id, 上下文窗口)。
+/// 上游投影一个供应商只写一张表，Grok 的 `/model` 只能列出员工在 Loov 页选的那个；这里给 Loov 的
+/// 其余模型各写一张，都发往本地路由的 Codex 入口（`/v1/responses`，同样经 new-api 计费）：
+/// Claude、GPT 由 Loov 的 Codex 子供应商原样发往 new-api；Gemini 用 Codex 聚合里 Gemini 成员发布的
+/// id（`ccs-<key>/<模型>`），由成员转成 Chat Completions。
+pub fn grok_extra_models(b: &Bootstrap, gemini_ids: &[String], skip: Option<&str>) -> Vec<(String, String, String, Option<u64>)> {
+    let mut out = Vec::new();
+    for kind in ["anthropic", "openai"] {
+        for id in models_of_kind(b, kind) {
+            let window = (kind == "anthropic").then_some(200_000);
+            out.push((grok_table_key(&id), id.clone(), id, window));
+        }
+    }
+    for published in gemini_ids {
+        let model = published.rsplit('/').next().unwrap_or(published).to_string();
+        out.push((grok_table_key(&model), model, published.clone(), None));
+    }
+    out.retain(|(_, name, _, _)| Some(name.as_str()) != skip);
+    out
+}
+
+/// 现在 ~/.grok/config.toml 里由 Loov 写的额外模型表名。
+fn grok_extra_tables_on_disk() -> Vec<String> {
+    let text = std::fs::read_to_string(crate::grok_config::get_grok_config_path()).unwrap_or_default();
+    let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else { return Vec::new() };
+    doc.get("model")
+        .and_then(|m| m.as_table_like())
+        .map(|t| t.iter().map(|(k, _)| k.to_string()).filter(|k| k.starts_with(GROK_EXTRA_PREFIX)).collect())
+        .unwrap_or_default()
+}
+
+/// 把 Loov 的全部模型写进 Grok Build 的模型选择器（每次从 Loov 页启动 Grok 时同步：模型目录、本地
+/// 令牌都可能变了）。Codex 不在代理模式时 Codex 入口不可用，只清掉旧表。
+pub fn sync_grok_models(state: &AppState) -> Result<(), AppError> {
+    let mut set = Vec::new();
+    if crate::mode::current::is_proxy(&AppType::Codex) {
+        if let (Some(b), Some(token)) = (super::credentials().and_then(|c| c.bootstrap), Some(super::local_auth::live_token()).filter(|t| t.starts_with("lat_"))) {
+            let gemini_ids: Vec<String> = crate::mode::controller::stack_views(state, &AppType::Codex)
+                .map(|v| v.members.into_iter().filter(|m| m.provider_id == "loov-codex-gemini").flat_map(|m| m.model_ids).collect())
+                .unwrap_or_default();
+            let (host, port) = state.db.get_proxy_client_endpoint_sync();
+            let base = format!("{}/v1", crate::services::proxy::proxy_origin(&host, port));
+            for (key, name, model, window) in grok_extra_models(&b, &gemini_ids, grok_model(state).as_deref()) {
+                let mut t = toml_edit::Table::new();
+                t["name"] = toml_edit::value(name);
+                t["model"] = toml_edit::value(model);
+                t["base_url"] = toml_edit::value(base.clone());
+                t["api_key"] = toml_edit::value(token.clone());
+                t["api_backend"] = toml_edit::value("responses");
+                if let Some(w) = window {
+                    t["context_window"] = toml_edit::value(w as i64);
+                }
+                set.push((KeyPath::new(&["model", &key]), toml_edit::Item::Table(t)));
+            }
+        }
+    }
+    write_grok_extra(&state.db, set)
+}
+
+/// 清掉 Loov 写的额外模型表（恢复原配置时）。
+pub fn remove_grok_models(db: &Database) -> Result<(), AppError> {
+    write_grok_extra(db, Vec::new())
+}
+
+fn write_grok_extra(db: &Database, set: Vec<(KeyPath, toml_edit::Item)>) -> Result<(), AppError> {
+    let keep: Vec<String> = set.iter().filter_map(|(k, _)| k.0.last().cloned()).collect();
+    let remove: Vec<KeyPath> = grok_extra_tables_on_disk()
+        .into_iter()
+        .filter(|k| !keep.contains(k))
+        .map(|k| KeyPath::new(&["model", &k]))
+        .collect();
+    if set.is_empty() && remove.is_empty() {
+        return Ok(());
+    }
+    let path = crate::grok_config::get_grok_config_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let patch = TomlPatch { remove, set, ..Default::default() };
+    let write = AppWrite::begin(db, AppType::GrokBuild.as_str())?;
+    let changes = [FileChange { file: LiveFile::private(path), patch: &patch }];
+    write.run(OP_GROK_MODELS, &changes, PendingTarget::default())?;
+    Ok(())
 }
 
 /// Codex 桌面版没登录官方 ChatGPT 账号时只能选官方默认模型（new-api 上没有），请求会被拒。
@@ -344,19 +598,19 @@ pub async fn attach_desktop(state: &AppState) -> Result<(), String> {
     if !exists {
         return Err("Loov 账号下没有可用的 Claude 模型".to_string());
     }
-    crate::mode::controller::enter_with_route(state, &AppType::ClaudeDesktop, false, Some(DESKTOP_PROVIDER_ID)).await
+    enter_stack(state, &AppType::ClaudeDesktop, DESKTOP_PROVIDER_ID).await
 }
 
-/// 让 Claude Code 与 Codex 进入路由模式并路由到 Loov 的子供应商。
+/// 让 Claude Code 与 Codex 进入聚合模式：默认路由到 Loov 的子供应商，其余几家模型经聚合成员（[`MEMBERS`]）。
 pub async fn attach(state: &AppState) -> Result<(), String> {
-    crate::mode::controller::enter_with_route(state, &AppType::Claude, false, Some(&claude_child_id())).await?;
+    enter_stack(state, &AppType::Claude, &claude_child_id()).await?;
     let has_codex = state
         .db
         .get_provider_by_id(&codex_child_id(), "codex")
         .map(|p| p.is_some())
         .unwrap_or(false);
     if has_codex {
-        crate::mode::controller::enter_with_route(state, &AppType::Codex, false, Some(&codex_child_id())).await?;
+        enter_stack(state, &AppType::Codex, &codex_child_id()).await?;
     }
     Ok(())
 }
@@ -710,6 +964,58 @@ mod tests {
 
         let no_gemini = universal_provider(&bootstrap(&["claude-sonnet-5"], vec![]), None);
         assert!(!no_gemini.apps.gemini);
+    }
+
+    #[test]
+    fn stack_members_cover_the_other_model_families() {
+        let b = bootstrap(&["claude-sonnet-5", "gpt-6-sol", "gemini-3.8-flash", "gemini-embedding-001", "gemini-4-argon"], vec![]);
+        let by_id = |id: &str| MEMBERS.iter().find(|m| m.id == id).unwrap();
+        // Claude Code 的 GPT 成员：Responses 协议，发布 GPT 模型
+        let p = member_provider(&b, by_id("loov-claude-gpt")).unwrap();
+        assert!(is_loov_provider(&p.id));
+        let meta = p.meta.as_ref().unwrap();
+        assert_eq!(meta.api_format.as_deref(), Some("openai_responses"));
+        let models: Vec<&str> = meta.stack_models.as_ref().unwrap().iter().map(|m| m.model.as_str()).collect();
+        assert_eq!(models, ["gpt-6-sol"]);
+        assert_eq!(p.settings_config["env"]["ANTHROPIC_AUTH_TOKEN"], KEY_PLACEHOLDER);
+        // Gemini 成员去掉向量模型，走 Chat Completions
+        let p = member_provider(&b, by_id("loov-claude-gemini")).unwrap();
+        let meta = p.meta.as_ref().unwrap();
+        assert_eq!(meta.api_format.as_deref(), Some("openai_chat"));
+        assert_eq!(meta.stack_models.as_ref().unwrap().len(), 2);
+        // Codex 的 Gemini 成员：模型目录 + chat
+        let p = member_provider(&b, by_id("loov-codex-gemini")).unwrap();
+        assert_eq!(p.meta.as_ref().unwrap().api_format.as_deref(), Some("openai_chat"));
+        assert_eq!(p.settings_config["modelCatalog"]["models"][1]["model"], "gemini-4-argon");
+        assert!(p.settings_config["config"].as_str().unwrap().contains("https://me.loov.cc/v1"));
+        // Desktop 成员：路由表
+        let p = member_provider(&b, by_id("loov-desktop-gpt")).unwrap();
+        assert!(p.meta.as_ref().unwrap().claude_desktop_model_routes.contains_key("gpt-6-sol"));
+        // 没有这家模型就不建成员
+        assert!(member_provider(&bootstrap(&["claude-sonnet-5"], vec![]), by_id("loov-claude-gpt")).is_none());
+    }
+
+    #[test]
+    fn grok_extra_models_list_every_family_and_skip_the_main_one() {
+        let b = bootstrap(&["claude-sonnet-5", "claude-opus-5-5", "gpt-6-sol", "gemini-3.8-flash"], vec![]);
+        let extra = grok_extra_models(&b, &["ccs-gemini/gemini-3.8-flash".to_string()], Some("claude-sonnet-5"));
+        let names: Vec<&str> = extra.iter().map(|e| e.1.as_str()).collect();
+        assert_eq!(names, ["claude-opus-5-5", "gpt-6-sol", "gemini-3.8-flash"]);
+        assert_eq!(extra[0].0, "loov-claude-opus-5-5");
+        assert_eq!(extra[0].3, Some(200_000));
+        // Gemini 发 Codex 聚合的 id，由 Gemini 成员转协议
+        assert_eq!(extra[2].2, "ccs-gemini/gemini-3.8-flash");
+    }
+
+    #[test]
+    fn codex_catalog_lists_gpt_then_claude_without_gemini() {
+        let b = bootstrap(&["claude-sonnet-5", "gpt-6-sol", "gemini-3.8-flash", "claude-opus-5-5"], vec![]);
+        assert_eq!(codex_models(&b), ["gpt-6-sol", "claude-sonnet-5", "claude-opus-5-5"]);
+        let cat = codex_model_catalog(&b).unwrap();
+        assert_eq!(cat["models"][0]["model"], "gpt-6-sol");
+        assert!(cat["models"][0].get("contextWindow").is_none());
+        assert_eq!(cat["models"][1]["contextWindow"], 200_000);
+        assert!(codex_model_catalog(&bootstrap(&["gemini-3.8-flash"], vec![])).is_none());
     }
 
     #[test]

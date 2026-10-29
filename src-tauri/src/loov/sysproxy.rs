@@ -32,15 +32,17 @@ impl fmt::Display for Upstream {
     }
 }
 
-/// 按「环境变量 → 系统设置」的顺序找第一个可用的代理；指向 Loov 自己本地端口的不算。
+/// 按「环境变量 → 系统设置」的顺序找第一个可用的代理；指向 Loov 自己的不算。
 pub fn detect() -> Option<Upstream> {
     let found = from_env().or_else(from_system);
     found.filter(|u| !points_to_self(u))
 }
 
+/// 指向 Loov 自己：本地路由的端口，或「代理 / 全局」模式下 Loov 接管系统代理用的 sys-in 端口
+/// （不跳过的话会把自己当成上游，节点连接绕回自己）。
 fn points_to_self(u: &Upstream) -> bool {
     let local = matches!(u.host.as_str(), "127.0.0.1" | "localhost" | "::1");
-    local && u.port == crate::proxy::http_client::get_proxy_port()
+    local && (u.port == crate::proxy::http_client::get_proxy_port() || super::netmode::is_own_port(u.port))
 }
 
 fn from_env() -> Option<Upstream> {

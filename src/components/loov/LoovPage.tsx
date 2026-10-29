@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useContext, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -13,7 +13,11 @@ import {
   Ticket,
   Wallet,
 } from "lucide-react";
-import loovLogo from "@/assets/icons/logo.svg";
+import loovTile from "@/assets/icons/loov-tile.svg";
+import { WindowControlsContext } from "@/components/shell/AppPageHeader";
+import { DRAG_REGION_ATTR, DRAG_REGION_STYLE, isMac } from "@/lib/platform";
+import { cn } from "@/lib/utils";
+import { LoovWordmark } from "./LoovWordmark";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -29,6 +33,7 @@ import {
 import { toast } from "@/lib/toast";
 import { refreshLoovManaged } from "@/lib/loovManaged";
 import { AppLauncher } from "./AppLauncher";
+import { NetModeSwitch, NodePicker } from "./NetworkControls";
 import {
   loovApi,
   parseLoovError,
@@ -70,22 +75,38 @@ export function LoovPage({ embedded = false, onToggleAdvanced, advanced = false 
   const upgrade = upgradeState(appVersion, meta?.client);
   const downloadUrl = meta?.client?.downloadUrl;
 
+  const windowControls = useContext(WindowControlsContext);
+  // 简洁页没有侧栏：macOS 的红绿灯浮在左上角，要让出位置
+  const macInset = !embedded && isMac();
+  const titleBar = !!windowControls || macInset;
+
   return (
-    <div
-      id="main-content"
-      className={
-        embedded
-          ? "min-h-0 flex-1 overflow-y-auto scroll-stable"
-          : "flex h-screen w-full flex-col overflow-y-auto bg-app text-fg-1"
-      }
-    >
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 pb-10 pt-8">
+    <div className={embedded ? "flex min-h-0 flex-1 flex-col" : "flex h-screen w-full flex-col bg-app text-fg-1"}>
+      {titleBar && (
+        // 窗口标题栏：可拖动；Windows（及 Linux 应用内按钮）右端是最小化 / 最大化 / 关闭
+        <div
+          {...DRAG_REGION_ATTR}
+          style={DRAG_REGION_STYLE as React.CSSProperties}
+          className={cn("flex h-11 shrink-0 items-center pe-2", macInset && "ps-[78px]")}
+        >
+          <div {...DRAG_REGION_ATTR} className="h-full flex-1" />
+          {windowControls && (
+            <div className="flex shrink-0 items-center gap-1" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
+              {windowControls}
+            </div>
+          )}
+        </div>
+      )}
+      <div id="main-content" className="min-h-0 flex-1 overflow-y-auto scroll-stable">
+      <div className={cn("mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 pb-10", titleBar ? "pt-2" : "pt-8")}>
         <header className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <img src={loovLogo} alt="" draggable={false} className="h-10 w-10 shrink-0" />
+            <img src={loovTile} alt="" draggable={false} className="h-11 w-11 shrink-0 rounded-[10px]" />
             <div>
-              <h1 className="text-page font-semibold leading-tight">Loov Agent</h1>
-              <p className="text-sm text-fg-3">{t("loov.tagline")}</p>
+              <h1 className="m-0 leading-tight">
+                <LoovWordmark className="text-[26px]" />
+              </h1>
+              <p className="mt-1 text-sm text-fg-3">{t("loov.tagline")}</p>
             </div>
           </div>
           {onToggleAdvanced && (
@@ -130,6 +151,7 @@ export function LoovPage({ embedded = false, onToggleAdvanced, advanced = false 
         ) : (
           <LoginCard status={status} blocked={upgrade === "required"} />
         )}
+      </div>
       </div>
     </div>
   );
@@ -350,7 +372,7 @@ function HomePanel({ status }: { status: LoovStatus }) {
                 {ready && (
                   <span className="font-normal text-fg-3">
                     {" · "}
-                    {status.nodes.join(" / ")}
+                    {status.net?.nodes.length ? <NodePicker net={status.net} /> : status.nodes.join(" / ")}
                     {status.route === "proxy" ? ` · ${t("loov.tunnelViaProxy", { proxy: status.via ?? "" })}` : ""}
                   </span>
                 )}
@@ -384,6 +406,9 @@ function HomePanel({ status }: { status: LoovStatus }) {
           </div>
         </div>
         {failed && <p className="mt-2 whitespace-pre-line text-xs text-danger">{status.reason}</p>}
+        <div className="mt-3 border-t border-border pt-3">
+          <NetModeSwitch net={ready ? status.net : null} disabled={!ready} />
+        </div>
       </section>
 
       {/* 启动台 */}

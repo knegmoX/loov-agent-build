@@ -208,3 +208,31 @@ pub async fn loov_app_launch(
     super::apps::launch(state.inner(), &id, restart.unwrap_or(false)).await
 }
 
+
+/// 手选节点（`node` 为空 = 自动，选最快的）。
+#[tauri::command]
+pub async fn loov_set_node(state: tauri::State<'_, AppState>, node: Option<String>) -> Result<Status, LoovError> {
+    flows::set_selection(state.inner(), Some(node), None).await
+}
+
+/// 网络模式：direct（仅 Loov 应用走安全通道）/ rule（国外网站走通道）/ global（全部走通道）。
+#[tauri::command]
+pub async fn loov_set_net_mode(state: tauri::State<'_, AppState>, mode: super::netmode::NetMode) -> Result<Status, LoovError> {
+    flows::set_selection(state.inner(), None, Some(mode)).await
+}
+
+/// E2E：同 `loov_set_node` / `loov_set_net_mode`。
+#[cfg_attr(not(feature = "test-hooks"), doc(hidden))]
+pub async fn loov_set_selection_test_hook(
+    state: &AppState,
+    node: Option<Option<String>>,
+    mode: Option<super::netmode::NetMode>,
+) -> Result<Status, LoovError> {
+    flows::set_selection(state, node, mode).await
+}
+
+/// E2E：把 Loov 的全部模型写进 Grok 的模型选择器（与 Loov 页启动 Grok 同一路径）。
+#[cfg_attr(not(feature = "test-hooks"), doc(hidden))]
+pub fn loov_grok_sync_models_test_hook(state: &AppState) -> Result<(), LoovError> {
+    super::provision::sync_grok_models(state).map_err(|e| LoovError::Internal { message: e.to_string() })
+}

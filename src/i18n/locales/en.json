@@ -4148,7 +4148,10 @@
       "pi": "Installs with npm",
       "mcode": "Installs with the official script, falls back to npm",
       "agy": "Installs with the official script"
-    }
+    },
+    "codexDesktop": "Codex Desktop",
+    "installed": "Installed",
+    "launch": "Launch"
   },
   "appPage": {
     "moreActions": "More actions for {{name}}",
@@ -4931,8 +4934,8 @@
       "launched": "Opened {{name}}",
       "installed": "{{name}} installed",
       "getNode": "Get Node.js",
-      "restartTitle": "Restart Claude Desktop?",
-      "restartDesc": "Claude Desktop is running. It switches to Loov billing after a restart; unsent input may be lost.",
+      "restartTitle": "Restart {{name}}?",
+      "restartDesc": "{{name}} is running. It switches to Loov billing after a restart; unsent input may be lost.",
       "restartLater": "Later",
       "restartNow": "Restart now",
       "downloading": "Downloading {{percent}}%",
@@ -4949,8 +4952,33 @@
       "installAria": "Install {{name}}",
       "install": "Install",
       "modelFor": "Default model for {{name}}",
-      "hint": "You can also run claude or codex in any terminal — billed through Loov as well.",
-      "codexDesktopNote": "Shares the Codex model. Sign in with a free ChatGPT account to switch company models inside the app"
+      "hint": "The dropdown on each card is the default model; every app can also switch among all Loov models (/model in Claude Code, Codex and Grok; the model menu in Claude Desktop and Codex Desktop). You can run claude or codex in any terminal too — billed through Loov as well.",
+      "codexDesktopNote": "Shares the Codex default model; switch company models in the app’s model picker",
+      "bigDownload": "About 1 GB to download — the first install takes a while",
+      "desktopNote": "Pick any Loov model from the model menu in Desktop"
+    },
+    "backToSimple": "Back to simple mode",
+    "net": {
+      "pickNode": "Choose node",
+      "auto": "Auto (fastest)",
+      "autoWith": "Auto · {{node}}",
+      "unavailable": "Unavailable",
+      "pinFallback": "The selected node is unavailable; switched back to auto",
+      "mode": "Network mode",
+      "modes": {
+        "direct": "Direct",
+        "rule": "Rule",
+        "global": "Global"
+      },
+      "modeHint": {
+        "direct": "Only apps launched by Loov use the secure channel",
+        "rule": "Overseas sites use the secure channel; China sites connect directly",
+        "global": "All traffic except the local network uses the secure channel"
+      },
+      "sysError": "Failed to set the system proxy: {{error}}",
+      "ackTitle": "Take over the system proxy?",
+      "ackDesc": "Rule and Global modes point the system proxy at Loov’s secure channel, so browsers and other apps go through company nodes. Your original settings are restored when you switch back to Direct, disconnect or quit Loov.",
+      "ackOk": "Continue"
     }
   }
 }

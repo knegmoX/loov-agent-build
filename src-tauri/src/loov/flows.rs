@@ -8,7 +8,8 @@ use crate::store::AppState;
 
 use super::credentials::{self, Credentials};
 use super::hub_client::{Account, Bootstrap, DeviceEntry, DeviceInput, HubClient, HubError};
-use super::{local_auth, provision, tunnel, Status, BLACKHOLE_PROXY};
+use super::netmode::{self, NetMode, Prefs};
+use super::{local_auth, provision, tunnel, NetView, Status, BLACKHOLE_PROXY};
 
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -119,8 +120,34 @@ async fn stop_tunnel() {
     }
 }
 
+/// 「代理 / 全局」模式下把系统代理指向 sys-in，直连模式还原。返回设置失败的原因（隧道照常可用）。
+fn apply_system_proxy(handle: &tunnel::TunnelHandle) -> Option<String> {
+    match handle.sys {
+        Some(sys) => netmode::engage(sys.ports).err().inspect(|e| log::error!("[loov] 设置系统代理失败：{e}")),
+        None => {
+            netmode::release();
+            None
+        }
+    }
+}
+
+fn ready_status(username: &str, device_id: &str, handle: &tunnel::TunnelHandle, prefs: &Prefs, sys_error: Option<String>) -> Status {
+    Status::Ready {
+        username: username.to_string(),
+        device_id: device_id.to_string(),
+        proxy_url: handle.proxy_url(),
+        http_port: handle.http_port,
+        nodes: handle.node_ids.clone(),
+        route: handle.route,
+        via: handle.via.clone(),
+        net: NetView::of(handle, prefs, sys_error),
+    }
+}
+
 /// 有了 bootstrap 之后把链路拉起来：隧道 → 上游代理 → 供应商行。失败也保持 fail-closed。
 async fn bring_up(state: &AppState, b: &Bootstrap) -> Status {
+    // 隧道重建期间不接管系统代理：旧的 sys-in 马上要停，员工不能断网；探测时读系统代理也不会读到自己
+    netmode::release();
     pin_blackhole(state);
     super::privacy::load_config(&state.db);
     if let Err(e) = local_auth::init(&state.db) {
@@ -130,20 +157,15 @@ async fn bring_up(state: &AppState, b: &Bootstrap) -> Status {
         log::error!("[loov] 写入供应商失败: {e}");
     }
     stop_tunnel().await;
+    let prefs = netmode::load_prefs();
+    let sel = tunnel::Selection { node: prefs.node.clone(), mode: prefs.mode };
     let status = match tunnel::locate_xray() {
         Err(e) => Status::TunnelFailed { reason: e },
-        Ok(bin) => match tunnel::establish(&b.tunnel.nodes, &bin, &health_url()).await {
+        Ok(bin) => match tunnel::establish(&b.tunnel.nodes, &bin, &health_url(), &sel).await {
             Err(e) => Status::TunnelFailed { reason: e },
             Ok(handle) => {
-                let s = Status::Ready {
-                    username: b.user.username.clone(),
-                    device_id: b.device.id.clone(),
-                    proxy_url: handle.proxy_url(),
-                    http_port: handle.http_port,
-                    nodes: handle.node_ids.clone(),
-                    route: handle.route,
-                    via: handle.via.clone(),
-                };
+                let sys_error = apply_system_proxy(&handle);
+                let s = ready_status(&b.user.username, &b.device.id, &handle, &prefs, sys_error);
                 *super::state().tunnel.lock().await = Some(handle);
                 s
             }
@@ -196,7 +218,8 @@ fn install_signal_cleanup() {
             let Ok(mut s) = signal(kind) else { continue };
             tokio::spawn(async move {
                 if s.recv().await.is_some() {
-                    log::warn!("[loov] 收到信号 {code}，停止隧道后退出");
+                    log::warn!("[loov] 收到信号 {code}，还原系统代理、停止隧道后退出");
+                    netmode::release();
                     stop_tunnel().await;
                     std::process::exit(128 + code);
                 }
@@ -208,9 +231,93 @@ fn install_signal_cleanup() {
 #[cfg(not(unix))]
 fn install_signal_cleanup() {}
 
+/// 换节点 / 换网络模式。`node`：Some(None) = 改回自动，Some(Some(id)) = 手选；`mode` 为 None 不改。
+/// 隧道就绪时用已探测的结果重启 xray（端口、口令不变，已启动的应用不受影响）；手选的节点之前没通过
+/// 探测时整条链路重建一次（重新探测，仍不通就回到自动并在状态里标出来）。
+pub async fn set_selection(state: &AppState, node: Option<Option<String>>, mode: Option<NetMode>) -> Result<Status, LoovError> {
+    let mut prefs = netmode::load_prefs();
+    if let Some(n) = node {
+        prefs.node = n.filter(|s| !s.is_empty());
+    }
+    if let Some(m) = mode {
+        prefs.mode = m;
+    }
+    netmode::save_prefs(&prefs).map_err(|message| LoovError::Internal { message })?;
+    let (username, device_id) = match super::status() {
+        Status::Ready { username, device_id, .. } => (username, device_id),
+        // 没连上：下次建隧道时生效
+        s => return Ok(s),
+    };
+    let sel = tunnel::Selection { node: prefs.node.clone(), mode: prefs.mode };
+    let mut guard = super::state().tunnel.lock().await;
+    let Some(old) = guard.take() else { return Ok(super::status()) };
+    // 先放开系统代理：xray 重启的这一两秒里浏览器不至于连到停掉的端口
+    netmode::release();
+    match tunnel::reconfigure(old, &health_url(), &sel).await {
+        Ok(handle) => {
+            let sys_error = apply_system_proxy(&handle);
+            let s = ready_status(&username, &device_id, &handle, &prefs, sys_error);
+            route_upstream(Some(&handle.proxy_url()));
+            *guard = Some(handle);
+            super::set_status(s.clone());
+            Ok(s)
+        }
+        Err((e, back)) => {
+            log::warn!("[loov] 切换节点 / 模式没能直接生效（{e}），重建安全通道");
+            if let Some(h) = back {
+                h.stop().await;
+            }
+            drop(guard);
+            reconnect(state).await
+        }
+    }
+}
+
+/// 用缓存的配置整条重建链路（重新探测节点），并重写加固键。
+async fn reconnect(state: &AppState) -> Result<Status, LoovError> {
+    let b = super::credentials().and_then(|c| c.bootstrap).ok_or(LoovError::NotLoggedIn)?;
+    let s = bring_up(state, &b).await;
+    harden(state);
+    Ok(s)
+}
+
+/// 每 15 秒看一眼 xray 还活着没有。意外退出时：先还原系统代理（员工不能断网）、出站回黑洞，
+/// 再自动重建一次链路。
+fn spawn_watchdog(state: &AppState) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    let state = state.clone();
+    ONCE.call_once(move || {
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(15));
+            loop {
+                tick.tick().await;
+                let died = {
+                    let mut g = super::state().tunnel.lock().await;
+                    let dead = g.as_mut().is_some_and(|h| !h.is_alive());
+                    if dead { g.take() } else { None }
+                };
+                let Some(dead) = died else { continue };
+                log::error!("[loov] xray 意外退出，重建安全通道");
+                netmode::release();
+                route_upstream(None);
+                super::set_status(Status::TunnelFailed { reason: "安全通道进程意外退出，正在重连…".into() });
+                dead.stop().await;
+                if let Err(e) = reconnect(&state).await {
+                    log::error!("[loov] 重建安全通道失败：{e}");
+                }
+            }
+        });
+    });
+}
+
 /// 应用启动：在上游 `mode::controller::startup` **之前**调用。
 pub async fn startup(state: &AppState) -> Status {
     install_signal_cleanup();
+    // 上次没正常退出（崩溃、断电）时系统代理可能还指着已经不在的 sys-in：先还原，员工才能上网
+    if netmode::engaged() {
+        netmode::release();
+    }
+    spawn_watchdog(state);
     let creds = match credentials::load() {
         Ok(Some(c)) => c,
         Ok(None) => {
@@ -388,8 +495,9 @@ pub async fn revoke_device(id: &str) -> Result<(), LoovError> {
     Ok(hub().revoke_device(&token()?, id).await?)
 }
 
-/// 退出前：停 sidecar，上游代理回黑洞。
+/// 退出前：还原系统代理，停 sidecar，上游代理回黑洞。
 pub async fn shutdown() {
+    netmode::release();
     stop_tunnel().await;
     if super::active() {
         route_upstream(None);
@@ -398,6 +506,7 @@ pub async fn shutdown() {
 
 /// 同步版本（进程退出路径没有运行时可用时）。
 pub fn shutdown_blocking() {
+    netmode::release();
     if let Ok(mut g) = super::state().tunnel.try_lock() {
         if let Some(h) = g.take() {
             h.stop_blocking();

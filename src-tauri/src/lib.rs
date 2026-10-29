@@ -1833,6 +1833,8 @@ pub fn run() {
             loov::commands::loov_apps_status,
             loov::commands::loov_app_install,
             loov::commands::loov_app_launch,
+            loov::commands::loov_set_node,
+            loov::commands::loov_set_net_mode,
             loov::commands::loov_app_set_model,
             commands::test_proxy_url,
             commands::get_upstream_proxy_status,

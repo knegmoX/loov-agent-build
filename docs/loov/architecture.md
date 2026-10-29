@@ -43,8 +43,9 @@
 | `tunnel.rs` | 生成 xray 配置、按 `xray.lock.json` 校验二进制、启动 sidecar、清理残留进程；逐节点探测（直连 / 经本机代理）后选节点和走法，再做端口独占与 5 连发健康检查 |
 | `sysproxy.rs` | 读本机代理（环境变量、Windows「Internet 选项」、macOS `scutil --proxy`），供 xray 经 `sockopt.dialerProxy` 拨号 |
 | `local_auth.rs` | 生成与轮换 `lat_` 令牌、本地路由鉴权中间件、识别占位令牌 |
-| `provision.rs` | 写统一供应商（含 Gemini 子供应商）与 Claude Desktop 供应商、进入路由模式、写 Claude 与 Codex 加固键（Claude 加固键含 `CLAUDE_CODE_AUTO_MODE_SERVER=0`：上游不支持 auto mode 服务端分类检查，不关每个会话都会提示 isn't eligible） |
-| `apps.rs` | 启动台：四个应用的检测、安装（经隧道下载）、启动（见 dev-05） |
+| `provision.rs` | 写统一供应商（含 Gemini 子供应商）与 Claude Desktop 供应商、聚合成员（GPT / Gemini，见 dev-06）、进入聚合模式、写 Claude 与 Codex 加固键（Claude 加固键含 `CLAUDE_CODE_AUTO_MODE_SERVER=0`：上游不支持 auto mode 服务端分类检查，不关每个会话都会提示 isn't eligible） |
+| `apps.rs` | 启动台：六个应用的检测、安装（经隧道下载）、启动（见 dev-05） |
+| `netmode.rs` | 节点偏好、网络模式；代理 / 全局模式接管系统代理并负责还原（见 dev-06） |
 | `gemini_route.rs` | Antigravity 的本地入口 `/loov/gemini`，固定发往 Loov 的 Gemini 子供应商 |
 | `restore.rs` | 登录前快照、恢复原配置、`managed()` 判断、官方直连入口判定 `hide_provider` |
 | `mcp_proxy.rs` | 云端搜索 MCP 的本地透传 `/loov/mcp`：lat_ 换成 ldt_，经隧道发往 hub |

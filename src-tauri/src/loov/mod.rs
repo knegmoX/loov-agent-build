@@ -20,6 +20,7 @@ pub mod gemini_route;
 pub mod hub_client;
 pub mod local_auth;
 pub mod mcp_proxy;
+pub mod netmode;
 pub mod privacy;
 pub mod provision;
 pub mod restore;
@@ -132,7 +133,61 @@ pub enum Status {
         route: tunnel::Route,
         /// 经本机代理时的代理地址（不含口令）。
         via: Option<String>,
+        /// 节点与网络模式（界面上的节点下拉、模式开关）。
+        net: NetView,
     },
+}
+
+/// 一个节点在界面上的样子。
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct NodeView {
+    pub id: String,
+    pub name: String,
+    /// 探测通过时的耗时（毫秒）；None = 不可用
+    pub latency_ms: Option<u64>,
+    /// 不可用的原因
+    pub error: Option<String>,
+}
+
+/// 节点与网络模式的状态。
+#[derive(Debug, Clone, Default, serde::Serialize, PartialEq)]
+pub struct NetView {
+    /// 全部下发的节点（含不可用的），按下发顺序
+    pub nodes: Vec<NodeView>,
+    /// 现在走的节点
+    pub active: Option<String>,
+    /// 员工手选了节点（否则是自动）
+    pub pinned: Option<String>,
+    /// 手选的节点不可用，这次回到了自动
+    pub pin_fallback: bool,
+    pub mode: netmode::NetMode,
+    /// 「代理 / 全局」模式下系统代理指向的地址
+    pub sys_proxy: Option<String>,
+    /// 设置系统代理失败的原因（隧道照常可用）
+    pub sys_error: Option<String>,
+}
+
+impl NetView {
+    pub fn of(handle: &TunnelHandle, prefs: &netmode::Prefs, sys_error: Option<String>) -> Self {
+        NetView {
+            nodes: handle
+                .probe_report
+                .iter()
+                .map(|(n, r)| NodeView {
+                    id: n.id.clone(),
+                    name: n.name.clone(),
+                    latency_ms: r.as_ref().ok().copied(),
+                    error: r.as_ref().err().cloned(),
+                })
+                .collect(),
+            active: handle.active_node(),
+            pinned: prefs.node.clone(),
+            pin_fallback: handle.pin_fallback,
+            mode: prefs.mode,
+            sys_proxy: handle.sys.filter(|_| sys_error.is_none()).map(|s| format!("127.0.0.1:{}", s.ports.http)),
+            sys_error,
+        }
+    }
 }
 
 impl Status {
@@ -320,6 +375,7 @@ mod tests {
             nodes: vec![],
             route: tunnel::Route::Direct,
             via: None,
+            net: NetView::default(),
         };
         let text = format!("{:?}", s.redacted());
         assert!(!text.contains("SeCrEt123"), "{text}");

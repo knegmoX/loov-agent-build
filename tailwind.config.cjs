@@ -195,6 +195,9 @@ module.exports = {
           "BlinkMacSystemFont",
           '"SF Pro Text"',
           '"PingFang SC"',
+          // loov：与 web 一致，鸿蒙 / 小米的系统字体排在微软雅黑前
+          '"HarmonyOS Sans SC"',
+          '"MiSans"',
           '"Hiragino Sans GB"',
           '"Segoe UI Variable Text"',
           '"Segoe UI"',

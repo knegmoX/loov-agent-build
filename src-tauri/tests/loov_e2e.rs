@@ -225,6 +225,25 @@ async fn full_flow_login_tunnel_agents_logout() {
     assert!(codex_cfg_now.contains("[mcp_servers.loov-search]"), "{codex_cfg_now}");
     assert!(!codex_cfg_now.contains("ldt_") && !read(&home.join(".claude.json")).contains("ldt_"));
 
+    // 2c. 每个 agent 的模型选择器列出 Loov 的全部模型（聚合模式）：Claude Code 的 modelPicker、
+    // Codex 的 model_catalog_json 都含 GPT / Gemini
+    let settings: serde_json::Value = serde_json::from_str(&read(&settings_path)).unwrap();
+    let picker: Vec<String> = settings["modelPicker"]["options"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|o| o["model"].as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    eprintln!("Claude Code 模型选择器：{picker:?}");
+    let claude_gemini = picker.iter().find(|m| m.contains("gemini-3.8-flash")).cloned().expect("Claude Code 选择器里应有 Gemini");
+    assert!(picker.iter().any(|m| m.contains("gpt-")), "Claude Code 选择器里应有 GPT: {picker:?}");
+    let codex_cfg_now: toml::Value = toml::from_str(&read(&home.join(".codex").join("config.toml"))).unwrap();
+    let catalog_path = codex_cfg_now["model_catalog_json"].as_str().expect("Codex 应写 model_catalog_json").to_string();
+    let catalog_path = if Path::new(&catalog_path).is_absolute() { PathBuf::from(&catalog_path) } else { home.join(".codex").join(&catalog_path) };
+    let catalog: serde_json::Value = serde_json::from_str(&read(&catalog_path)).unwrap();
+    let slugs: Vec<String> = catalog["models"].as_array().unwrap().iter().filter_map(|m| m["slug"].as_str().map(str::to_string)).collect();
+    eprintln!("Codex 模型目录：{slugs:?}");
+    assert!(slugs.iter().any(|m| m.starts_with("gpt-")) && slugs.iter().any(|m| m.starts_with("claude-")), "{slugs:?}");
+    let codex_gemini = slugs.iter().find(|m| m.ends_with("/gemini-3.8-flash")).cloned().expect("Codex 目录里应有 Gemini");
+
     // 3. 本地路由鉴权
     let http = reqwest::Client::builder().no_proxy().build().unwrap();
     let base = format!("http://127.0.0.1:{port}");
@@ -236,6 +255,21 @@ async fn full_flow_login_tunnel_agents_logout() {
     assert_eq!(r.status(), 401, "上游占位常量应 401");
     let r = http.post(format!("{base}/v1/messages")).bearer_auth(&lat).json(&body).send().await.unwrap();
     assert!(r.status().is_success(), "带本地令牌经隧道调模型应成功，实际 {} {}", r.status(), r.text().await.unwrap_or_default());
+    // 3c. Claude Code 里选 Gemini：经聚合成员转成 Chat Completions 发往 new-api
+    let gbody = serde_json::json!({"model": claude_gemini, "max_tokens": 256, "messages": [{"role": "user", "content": "Reply with exactly the word OK"}]});
+    let r = http.post(format!("{base}/v1/messages")).bearer_auth(&lat).json(&gbody).send().await.unwrap();
+    let (st, txt) = (r.status(), r.text().await.unwrap_or_default());
+    assert!(st.is_success() && txt.contains("\"type\":\"message\""), "Claude Code 选 Gemini 应成功：{st} {txt}");
+    // Codex 里选 Gemini：同理
+    let r = http
+        .post(format!("{base}/v1/responses"))
+        .bearer_auth(&lat)
+        .json(&serde_json::json!({"model": codex_gemini, "input": "Reply with exactly the word OK", "max_output_tokens": 256}))
+        .send()
+        .await
+        .unwrap();
+    let (st, txt) = (r.status(), r.text().await.unwrap_or_default());
+    assert!(st.is_success() && txt.to_uppercase().contains("OK"), "Codex 选 Gemini 应成功：{st} {txt}");
 
     // 3b. 经本地路由调用云端搜索（hub /v1/mcp → SearXNG）
     let rpc = |id: u64, method: &str, params: serde_json::Value| {
@@ -266,6 +300,43 @@ async fn full_flow_login_tunnel_agents_logout() {
     // 遥测上报域名在通道里被丢弃（agy 的「分享交互数据」靠这条规则真正关掉）
     let tele = via.get("https://play.googleapis.com/log").timeout(Duration::from_secs(15)).send().await;
     assert!(tele.is_err(), "play.googleapis.com 应被通道丢弃，实际 {:?}", tele.map(|r| r.status()));
+
+    // 4b. 节点选择与网络模式（测试进程没有桌面会话，系统代理写不进去也不影响 sys-in 本身）
+    let direct_ip = reqwest::Client::builder().no_proxy().build().unwrap().get("https://api.ipify.org").send().await.unwrap().text().await.unwrap();
+    let net_of = |s: &Status| match s {
+        Status::Ready { net, nodes, proxy_url: p, .. } => (net.clone(), nodes.clone(), p.clone()),
+        other => panic!("expected Ready, got {other:?}"),
+    };
+    let s = loov_set_selection_test_hook(&state, None, Some(loov::netmode::NetMode::Global)).await.expect("global");
+    let (net, _, p) = net_of(&s);
+    assert_eq!(p, proxy_url, "换模式不应换掉 Loov 自己的代理地址（已启动的应用带着它）");
+    let sys = net.sys_proxy.clone().or_else(|| Some("127.0.0.1:17890".into())).unwrap();
+    eprintln!("全局模式：sys-in {sys}，系统代理错误 {:?}", net.sys_error);
+    let sys_client = reqwest::Client::builder().proxy(reqwest::Proxy::all(format!("http://{sys}")).unwrap()).timeout(Duration::from_secs(20)).build().unwrap();
+    let ip = sys_client.get("https://api.ipify.org").send().await.unwrap().text().await.unwrap();
+    assert!(node_ips.contains(&ip.trim().to_string()), "全局模式出口 {ip} 应为节点");
+    let s = loov_set_selection_test_hook(&state, None, Some(loov::netmode::NetMode::Rule)).await.expect("rule");
+    assert_eq!(net_of(&s).0.mode, loov::netmode::NetMode::Rule);
+    let ip = sys_client.get("https://api.ipify.org").send().await.unwrap().text().await.unwrap();
+    assert!(node_ips.contains(&ip.trim().to_string()), "代理模式下国外网站出口 {ip} 应为节点");
+    let cn = sys_client.get("https://myip.ipip.net").send().await.unwrap().text().await.unwrap();
+    assert!(cn.contains(direct_ip.trim()), "代理模式下国内网站应直连（出口 {direct_ip}）：{cn}");
+    // 手选节点：只用它；改回自动
+    let last = node_ips.len();
+    let pick = creds.bootstrap.as_ref().unwrap().tunnel.nodes.iter().find(|n| n.id == "tw1").or_else(|| creds.bootstrap.as_ref().unwrap().tunnel.nodes.last()).unwrap().clone();
+    let s = loov_set_selection_test_hook(&state, Some(Some(pick.id.clone())), None).await.expect("pin");
+    let (net, in_use, _) = net_of(&s);
+    assert_eq!(in_use, vec![pick.id.clone()], "手选后只用这个节点");
+    assert_eq!((net.active.as_deref(), net.pinned.as_deref()), (Some(pick.id.as_str()), Some(pick.id.as_str())));
+    let ip = via.get("https://api.ipify.org").send().await.unwrap().text().await.unwrap();
+    assert_eq!(ip.trim(), pick.address, "Loov 流量应改走手选的节点");
+    let s = loov_set_selection_test_hook(&state, Some(None), Some(loov::netmode::NetMode::Direct)).await.expect("auto+direct");
+    let (net, in_use, _) = net_of(&s);
+    assert!(net.pinned.is_none() && net.sys_proxy.is_none());
+    assert!(!in_use.is_empty() && in_use.len() <= last);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(std::net::TcpListener::bind(("127.0.0.1", 17890)).is_ok(), "直连模式下 sys-in 应已关闭");
+    assert!(!loov::netmode::engaged(), "直连模式下不应接管系统代理");
 
     // 5. Claude Code 一轮对话（strace 零直连）。同时模拟员工 shell / 注册表里残留的变量：
     // 接管期间 settings.json 里的中和值必须压过它们，否则会直连 Vertex 或带错 Key / 模型名
@@ -370,6 +441,19 @@ async fn full_flow_login_tunnel_agents_logout() {
         assert!(st.is_success() && txt.to_uppercase().contains("OK"), "Grok 经 Loov 用 {model} 应成功：{st} {txt}");
     }
 
+    // Grok 的模型选择器：Loov 的其余模型各一张表，经本地路由的 Codex 入口
+    loov_grok_sync_models_test_hook(&state).expect("grok models");
+    let grok_doc: toml::Value = toml::from_str(&read(&home.join(".grok").join("config.toml"))).unwrap();
+    let tables = grok_doc["model"].as_table().unwrap();
+    eprintln!("Grok 模型表：{:?}", tables.keys().collect::<Vec<_>>());
+    let gem_table = tables.get("loov-gemini-3-8-flash").or_else(|| tables.get("loov-claude-sonnet-5")).expect("Grok 应有额外模型表");
+    assert_eq!(gem_table["base_url"].as_str(), Some(format!("http://127.0.0.1:{port}/v1").as_str()));
+    assert_eq!(gem_table["api_key"].as_str(), Some(lat.as_str()));
+    let gm = gem_table["model"].as_str().unwrap().to_string();
+    let r = http.post(format!("{base}/v1/responses")).bearer_auth(&lat).json(&rbody(&gm)).send().await.unwrap();
+    let (st, txt) = (r.status(), r.text().await.unwrap_or_default());
+    assert!(st.is_success() && txt.to_uppercase().contains("OK"), "Grok 额外模型 {gm} 应成功：{st} {txt}");
+
     // 6e. Codex 桌面版没登录官方账号时发的官方默认模型（new-api 上没有）被换成员工选的 Codex 模型
     let r = http.post(format!("{base}/v1/responses")).bearer_auth(&lat).json(&rbody("gpt-5.5-codex")).send().await.unwrap();
     let (st, txt) = (r.status(), r.text().await.unwrap_or_default());
@@ -418,6 +502,7 @@ async fn full_flow_login_tunnel_agents_logout() {
     assert!(!loov_desktop_routed_test_hook(), "恢复后 Claude Desktop 应退出路由模式");
     let grok_after = std::fs::read_to_string(home.join(".grok").join("config.toml")).unwrap_or_default();
     assert!(!grok_after.contains("lat_") && !grok_after.contains("/grokbuild/v1"), "恢复后 Grok 不应再指向 Loov: {grok_after}");
+    assert!(!grok_after.contains("[model.loov-"), "恢复后应删掉 Loov 写的 Grok 模型表: {grok_after}");
     let r = http.post(format!("{base}/v1/messages")).json(&body).send().await;
     assert!(r.map(|r| r.status() != 401).unwrap_or(true), "恢复后本地路由不再要求 Loov 令牌（或已停止）");
     let _ = state.proxy_service.stop().await;

@@ -13,7 +13,10 @@ export function LoovStartupSync() {
   const prev = useRef<string | undefined>(undefined);
   useEffect(() => {
     const state = status?.state;
-    if (prev.current === "starting" && state !== "starting") {
+    // 启动时连好，或刚登录 / 重新登录（从未登录变成已连接）：后端刚写了供应商、进了聚合模式，
+    // 之前缓存的供应商列表（登录前是空的）都要重新取
+    const loggedIn = prev.current === "noCredentials" || prev.current === "reloginRequired";
+    if ((prev.current === "starting" && state !== "starting") || (loggedIn && state === "ready")) {
       void queryClient.invalidateQueries();
     }
     prev.current = state;
