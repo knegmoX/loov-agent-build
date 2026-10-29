@@ -1,0 +1,45 @@
+# Auto detect text files and perform LF normalization.
+# loov: 所有平台检出都用 LF——Windows 构建机默认 core.autocrlf=true，没写 eol 的文本（如 *.svg）
+# 会被转成 CRLF，打出来的前端资源哈希和 macOS / Linux 不同（0.1.4 实测），各平台包不一致
+* text=auto eol=lf
+
+# Explicitly declare text files you want to always be normalized and converted
+# to native line endings on checkout.
+*.rs text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.txt text eol=lf
+
+# TypeScript/JavaScript files
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+
+# HTML/CSS files
+*.html text eol=lf
+*.css text eol=lf
+*.scss text eol=lf
+
+# Shell scripts
+*.sh text eol=lf
+
+# Denote all files that are truly binary and should not be modified.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.exe binary
+*.dll binary
+*.icns binary
+*.bmp binary
+*.webp binary
+*.pdf binary
+*.zip binary

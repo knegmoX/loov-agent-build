@@ -1,0 +1,23 @@
+<svg width="512" height="512" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="loovAcidLime" x1="14" y1="14" x2="86" y2="86" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#A3E635"/>
+      <stop offset="100%" stop-color="#10B981"/>
+    </linearGradient>
+  </defs>
+  <!-- Agent Signal Antenna -->
+  <path d="M50 18V8" stroke="#A3E635" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="50" cy="6" r="4.8" fill="#FF5500"/>
+  <!-- Squircle Chat Bubble Body -->
+  <path d="M16 44C16 26.3269 30.3269 16 48 16H52C69.6731 16 84 26.3269 84 44V54C84 71.6731 69.6731 82 52 82H34L18 92L21 76.5C17.8 70.5 16 62.8 16 54V44Z" fill="url(#loovAcidLime)"/>
+  <!-- Inner Face Screen -->
+  <rect x="24" y="27" width="52" height="43" rx="18" fill="#09090B" fill-opacity="0.9"/>
+  <!-- Small 'o' Eye (Left) -->
+  <circle cx="38" cy="45" r="6.5" stroke="#FEF08A" stroke-width="3.8" fill="#09090B"/>
+  <circle cx="39.5" cy="43.5" r="2.3" fill="#FFFFFF"/>
+  <!-- Big 'O' Eye (Right) -->
+  <circle cx="60" cy="45" r="10.5" stroke="#FFFFFF" stroke-width="4.2" fill="#09090B"/>
+  <circle cx="62.2" cy="42.8" r="3.6" fill="#FFFFFF"/>
+  <!-- 'V' Beak / Smile -->
+  <path d="M44.5 58L49.5 64.5L54.5 58" stroke="#FF5500" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

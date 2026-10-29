@@ -1,0 +1,195 @@
+# loov: Loov Agent 多平台打包（替代上游 release.yml：上游依赖其签名密钥、R2 与更新源）。
+# 触发：手动运行，或推送 loov-v* 标签（同时发布 GitHub Release）。
+# 产物未做代码签名：macOS 用 ad-hoc 签名（首次打开需右键「打开」），Windows 会有 SmartScreen 提示。
+name: Loov Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "要构建的平台，逗号分隔：windows,macos-arm64,macos-x64,linux（或 all）。私有仓库 macOS 分钟数按 10 倍计费"
+        required: false
+        default: "all"
+  push:
+    tags: ["loov-v*"]
+
+permissions:
+  contents: read  # loov: 审计 S7-10，仅 release job 提升为 write
+
+concurrency:
+  group: loov-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Select platforms
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          PLATFORMS: ${{ inputs.platforms || 'all' }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          allp = [
+              {"name": "windows-x64", "key": "windows", "os": "windows-2022", "target": "x86_64-pc-windows-msvc", "bundles": "nsis"},
+              {"name": "macos-arm64", "key": "macos-arm64", "os": "macos-14", "target": "aarch64-apple-darwin", "bundles": "app,dmg"},
+              {"name": "macos-x64", "key": "macos-x64", "os": "macos-14", "target": "x86_64-apple-darwin", "bundles": "app,dmg"},
+              # 22.04 的 glibc 较老，产物能在更多发行版上运行（本机 24.04 构建的包只能跑在 24.04+）
+              {"name": "linux-x64", "key": "linux", "os": "ubuntu-22.04", "target": "x86_64-unknown-linux-gnu", "bundles": "deb,appimage"},
+          ]
+          want = {w.strip() for w in os.environ["PLATFORMS"].split(",") if w.strip()}
+          sel = allp if "all" in want else [p for p in allp if p["key"] in want or p["name"] in want]
+          if not sel:
+              raise SystemExit(f"没有匹配的平台: {sorted(want)}")
+          print("matrix=" + json.dumps({"include": sel}))
+          PY
+
+  build:
+    name: ${{ matrix.name }}
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "20"
+
+      - name: Read pinned Rust toolchain
+        id: rust-toolchain
+        run: |
+          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config curl file patchelf \
+            libssl-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev
+
+      - name: Setup pnpm
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+        run: |
+          corepack enable
+          corepack install
+          pnpm --version
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Fetch xray sidecar (verified against src-tauri/xray.lock.json)
+        run: bash scripts/fetch-xray.sh "${{ matrix.target }}"
+
+      - name: Loov unit tests
+        # x86_64 macOS 是在 arm64 机器上交叉编译的，测试二进制不在这台机器上跑，跳过
+        if: matrix.target != 'x86_64-apple-darwin'
+        working-directory: src-tauri
+        run: "cargo test --features test-hooks --lib loov:: -- --test-threads=1"
+
+      - name: Build bundles
+        run: |
+          set -euo pipefail
+          extra=()
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            # ad-hoc 签名：没有 Apple 开发者证书时，arm64 二进制至少要有签名才能运行
+            extra=(-c '{"bundle":{"macOS":{"signingIdentity":"-"}}}')
+          fi
+          pnpm tauri build --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}" "${extra[@]}"
+
+      - name: Smoke-check bundled xray (macOS)
+        # ad-hoc 签名会改写 sidecar；确认签名后的 xray 仍能执行（客户端对随包 xray 不比对锁文件哈希）
+        if: runner.os == 'macOS'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          app=$(find "src-tauri/target/${TARGET}/release/bundle/macos" -maxdepth 1 -name '*.app' | head -1)
+          codesign -dv "$app/Contents/MacOS/xray" 2>&1 | head -4 || true
+          if [ "${TARGET}" = "aarch64-apple-darwin" ]; then
+            "$app/Contents/MacOS/xray" version | head -1
+          else
+            arch -x86_64 "$app/Contents/MacOS/xray" version | head -1 || echo "x64 冒烟跳过（runner 无 Rosetta）"
+          fi
+          ls "$app/Contents/Resources/xray-assets"
+
+      - name: Collect artifacts
+        env:
+          TARGET: ${{ matrix.target }}
+          NAME: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-out
+          ref="${GITHUB_REF_NAME//\//-}"
+          bundle="src-tauri/target/${TARGET}/release/bundle"
+          find "$bundle" -maxdepth 2 -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' \) -print0 |
+            while IFS= read -r -d '' f; do
+              base=$(basename "$f")
+              cp "$f" "dist-out/loov-agent_${ref}_${NAME}.${base##*.}"
+            done
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            # 再附一个 .app 的 zip，方便不想挂载 dmg 的场景
+            app=$(find "$bundle/macos" -maxdepth 1 -name '*.app' | head -1)
+            ditto -c -k --keepParent "$app" "dist-out/loov-agent_${ref}_${NAME}.app.zip"
+          fi
+          ls -la dist-out
+          if command -v sha256sum >/dev/null; then sum=(sha256sum); else sum=(shasum -a 256); fi
+          (cd dist-out && "${sum[@]}" -- * > "../SHA256SUMS-${NAME}.txt" && mv "../SHA256SUMS-${NAME}.txt" .)
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: loov-agent-${{ matrix.name }}
+          path: dist-out/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/loov-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          path: out
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat out/SHA256SUMS-*.txt > out/SHA256SUMS.txt
+          rm out/SHA256SUMS-*.txt
+          gh release create "${GITHUB_REF_NAME}" out/* --repo "${GITHUB_REPOSITORY}" \
+            --title "Loov Agent ${GITHUB_REF_NAME#loov-v}" \
+            --notes "未签名内部测试包。macOS：首次打开请右键「打开」；Windows：SmartScreen 选「仍要运行」。校验和见 SHA256SUMS.txt。"
