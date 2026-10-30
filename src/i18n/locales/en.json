@@ -4955,7 +4955,11 @@
       "hint": "The dropdown on each card is the default model; every app can also switch among all Loov models (/model in Claude Code, Codex and Grok; the model menu in Claude Desktop and Codex Desktop). You can run claude or codex in any terminal too — billed through Loov as well.",
       "codexDesktopNote": "Shares the Codex default model; switch company models in the app’s model picker",
       "bigDownload": "About 1 GB to download — the first install takes a while",
-      "desktopNote": "Pick any Loov model from the model menu in Desktop"
+      "desktopNote": "Pick any Loov model from the model menu in Desktop",
+      "health": {
+        "down": "unavailable",
+        "degraded": "unstable"
+      }
     },
     "backToSimple": "Back to simple mode",
     "net": {
@@ -4979,6 +4983,39 @@
       "ackTitle": "Take over the system proxy?",
       "ackDesc": "Rule and Global modes point the system proxy at Loov’s secure channel, so browsers and other apps go through company nodes. Your original settings are restored when you switch back to Direct, disconnect or quit Loov.",
       "ackOk": "Continue"
+    },
+    "usage": {
+      "month": "This month",
+      "today": "Today",
+      "details": "Details",
+      "none": "No spending this month",
+      "search": "Cloud search ×{{calls}}",
+      "unavailable": "Spending is unavailable right now",
+      "blocked": "This month’s budget is used up and model calls are paused. Ask your admin to raise the budget.",
+      "nearBudget": "{{percent}}% of this month’s budget used",
+      "apps": {
+        "codexdesk": "Codex Desktop",
+        "feishu": "Feishu channel",
+        "other": "Other"
+      }
+    },
+    "fallbackNotice": "{{from}} is unavailable right now; switched to {{to}} automatically (billed as {{to}})",
+    "safety": {
+      "label": "Agent permissions",
+      "levels": {
+        "careful": "Careful",
+        "standard": "Standard",
+        "full": "Full"
+      },
+      "hint": {
+        "careful": "Ask before editing files or running commands; Codex is read-only",
+        "standard": "Edit files in the working folder automatically; ask before running commands",
+        "full": "Never ask — agents may do anything"
+      },
+      "saved": "Agent permissions updated (settings you changed inside an agent are kept)",
+      "fullTitle": "Switch to full permissions?",
+      "fullDesc": "Agents will edit files and run commands without asking; a mistake could delete data. Use only in isolated environments such as a dedicated cloud server.",
+      "fullOk": "Switch"
     }
   }
 }

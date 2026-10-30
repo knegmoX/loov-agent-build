@@ -24,6 +24,9 @@ pub struct ApiInfo {
     #[serde(rename = "baseUrl")]
     pub base_url: String,
     pub key: String,
+    /// 按应用的 Key（`claude` / `codex` / …，见 `loov::attribution`）；老 hub 没有这个字段
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub keys: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -74,6 +77,9 @@ pub struct ModelEntry {
     pub kind: String,
     #[serde(default)]
     pub recommended: bool,
+    /// 近 30 分钟的健康度：degraded / down；正常时 hub 不下发
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -86,6 +92,9 @@ pub struct Bootstrap {
     pub models: Vec<String>,
     #[serde(rename = "modelCatalog", default)]
     pub model_catalog: Vec<ModelEntry>,
+    /// 模型故障时依次改用的模型（`loov::fallback`）
+    #[serde(rename = "modelFallbacks", default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub model_fallbacks: std::collections::HashMap<String, Vec<String>>,
     #[serde(rename = "topupUrl", default)]
     pub topup_url: String,
 }
@@ -101,6 +110,45 @@ pub struct Account {
     pub used_usd: f64,
     #[serde(rename = "topupUrl", default)]
     pub topup_url: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelList {
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(rename = "modelCatalog", default)]
+    pub model_catalog: Vec<ModelEntry>,
+    #[serde(rename = "modelFallbacks", default)]
+    pub model_fallbacks: std::collections::HashMap<String, Vec<String>>,
+}
+
+/// 本账号的花费（hub `/usage`）：按应用汇总 new-api 实扣金额 + 云端搜索成本，以及月预算。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Usage {
+    pub range: String,
+    pub from: i64,
+    pub to: i64,
+    pub total_usd: f64,
+    pub by_app: Vec<AppUsage>,
+    pub search: SearchUsage,
+    pub budget_usd: Option<f64>,
+    pub month_usd: f64,
+    #[serde(default)]
+    pub budget_blocked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AppUsage {
+    pub app: String,
+    pub usd: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SearchUsage {
+    pub calls: u64,
+    pub bytes: u64,
+    pub usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -312,6 +360,11 @@ impl HubClient {
         Ok(r.bootstrap)
     }
 
+    /// 模型目录、健康度与回退链（随时可能变，客户端定期刷新）。
+    pub async fn models(&self, token: &str) -> Result<ModelList, HubError> {
+        self.send(self.authed(self.http.get(self.url("/models")), token)).await
+    }
+
     pub async fn account(&self, token: &str) -> Result<Account, HubError> {
         #[derive(Deserialize)]
         struct R {
@@ -321,6 +374,16 @@ impl HubClient {
             .send(self.authed(self.http.get(self.url("/account")), token))
             .await?;
         Ok(r.account)
+    }
+
+    pub async fn usage(&self, token: &str, range: &str) -> Result<Usage, HubError> {
+        #[derive(Deserialize)]
+        struct R {
+            usage: Usage,
+        }
+        let path = format!("/usage?range={}", if range == "today" { "today" } else { "month" });
+        let r: R = self.send(self.authed(self.http.get(self.url(&path)), token)).await?;
+        Ok(r.usage)
     }
 
     pub async fn devices(&self, token: &str) -> Result<Vec<DeviceEntry>, HubError> {

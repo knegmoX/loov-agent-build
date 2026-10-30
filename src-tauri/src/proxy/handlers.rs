@@ -945,6 +945,7 @@ pub async fn handle_chat_completions(
         stack,
     )
     .await?;
+    ctx.app_type_str = crate::loov::attribution::log_app_label(ctx.app_type_str, &headers);
     let endpoint = endpoint_with_query(&uri, "/chat/completions");
 
     let is_stream = body
@@ -1064,6 +1065,8 @@ async fn handle_responses_for_app(
         stack,
     )
     .await?;
+    // loov: Grok 的额外模型表也发到这个入口，按它声明的来源记在 Grok 名下
+    ctx.app_type_str = crate::loov::attribution::log_app_label(ctx.app_type_str, &headers);
     let endpoint = endpoint_with_query(&uri, "/responses");
 
     let is_stream = body

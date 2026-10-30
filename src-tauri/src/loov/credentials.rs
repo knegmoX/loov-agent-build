@@ -200,6 +200,7 @@ pub fn save(creds: &Credentials) -> Result<(), String> {
     let mut on_disk = creds.clone();
     if let Some(b) = on_disk.bootstrap.as_mut() {
         b.api.key.clear();
+        b.api.keys.clear();
     }
     let plain = serde_json::to_vec(&on_disk).map_err(|e| e.to_string())?;
     let blob = seal_with(&key, &plain);

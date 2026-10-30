@@ -195,6 +195,13 @@ async fn full_flow_login_tunnel_agents_logout() {
     };
     assert!(loov::credentials::credentials_path().exists());
     assert!(loov::api_key().unwrap().starts_with("sk-"));
+    // 按应用计费：hub 为每个应用单独建了 Key，互不相同，也不同于通用 Key；都不落盘
+    let general = loov::api_key().unwrap();
+    let per_app: Vec<String> = loov::attribution::APPS.iter().map(|a| loov::api_key_for(Some(a)).unwrap()).collect();
+    assert!(per_app.iter().all(|k| k.starts_with("sk-") && *k != general), "应用 Key 应各自独立");
+    assert_eq!(per_app.iter().collect::<std::collections::HashSet<_>>().len(), per_app.len());
+    let cred_bytes = std::fs::read(loov::credentials::credentials_path()).unwrap();
+    assert!(!per_app.iter().any(|k| cred_bytes.windows(k.len()).any(|w| w == k.as_bytes())), "应用 Key 不得落盘");
 
     // 2. 文件断言
     let port = router_port(&state);
@@ -213,6 +220,12 @@ async fn full_flow_login_tunnel_agents_logout() {
     assert!(codex_cfg.contains(&format!("http://127.0.0.1:{port}/v1")), "{codex_cfg}");
     assert!(codex_cfg.contains(&lat), "config.toml 应含本地令牌\n{codex_cfg}");
     assert!(codex_cfg.contains("plugins = false") && codex_cfg.contains("enabled = false"), "{codex_cfg}");
+    // 权限档位（默认「标准」）写成各家自己的设置
+    let settings_now: serde_json::Value = serde_json::from_str(&read(&settings_path)).unwrap();
+    assert_eq!(settings_now["permissions"]["defaultMode"], "acceptEdits", "{settings_now}");
+    assert!(codex_cfg.contains("approval_policy = \"on-request\"") && codex_cfg.contains("sandbox_mode = \"workspace-write\""), "{codex_cfg}");
+    // Codex 自带的托管网页搜索经公司网关不可用：关掉，改用云端搜索 MCP
+    assert!(codex_cfg.contains("web_search = \"disabled\""), "{codex_cfg}");
     assert!(!codex_cfg.contains("sk-"));
 
     // 2b. 云端搜索 MCP 已下发给两个 CLI，只带本地令牌
@@ -260,6 +273,13 @@ async fn full_flow_login_tunnel_agents_logout() {
     let r = http.post(format!("{base}/v1/messages")).bearer_auth(&lat).json(&gbody).send().await.unwrap();
     let (st, txt) = (r.status(), r.text().await.unwrap_or_default());
     assert!(st.is_success() && txt.contains("\"type\":\"message\""), "Claude Code 选 Gemini 应成功：{st} {txt}");
+    // 3d. 模型故障回退：选 GPT 时上游出错（GPT-6 目前上游 500）就按 hub 的回退链改用 Claude，仍成功、仍计费
+    let gpt = picker.iter().find(|m| m.ends_with("--gpt-6-sol")).cloned().expect("选择器里应有 gpt-6-sol");
+    let fbody = serde_json::json!({"model": gpt, "max_tokens": 256, "messages": [{"role": "user", "content": "Reply with exactly the word OK"}]});
+    let r = http.post(format!("{base}/v1/messages")).bearer_auth(&lat).json(&fbody).send().await.unwrap();
+    let (st, txt) = (r.status(), r.text().await.unwrap_or_default());
+    eprintln!("GPT 请求（可能回退）：{st} {}", &txt[..txt.len().min(300)]);
+    assert!(st.is_success() && txt.contains("\"type\":\"message\""), "GPT 故障时应回退成功：{st} {txt}");
     // Codex 里选 Gemini：同理
     let r = http
         .post(format!("{base}/v1/responses"))
@@ -450,7 +470,15 @@ async fn full_flow_login_tunnel_agents_logout() {
     assert_eq!(gem_table["base_url"].as_str(), Some(format!("http://127.0.0.1:{port}/v1").as_str()));
     assert_eq!(gem_table["api_key"].as_str(), Some(lat.as_str()));
     let gm = gem_table["model"].as_str().unwrap().to_string();
-    let r = http.post(format!("{base}/v1/responses")).bearer_auth(&lat).json(&rbody(&gm)).send().await.unwrap();
+    assert_eq!(gem_table["extra_headers"]["x-loov-app"].as_str(), Some("grok"), "额外模型表要声明来源，计费记在 Grok 名下");
+    let r = http
+        .post(format!("{base}/v1/responses"))
+        .bearer_auth(&lat)
+        .header("x-loov-app", "grok")
+        .json(&rbody(&gm))
+        .send()
+        .await
+        .unwrap();
     let (st, txt) = (r.status(), r.text().await.unwrap_or_default());
     assert!(st.is_success() && txt.to_uppercase().contains("OK"), "Grok 额外模型 {gm} 应成功：{st} {txt}");
 
@@ -458,6 +486,16 @@ async fn full_flow_login_tunnel_agents_logout() {
     let r = http.post(format!("{base}/v1/responses")).bearer_auth(&lat).json(&rbody("gpt-5.5-codex")).send().await.unwrap();
     let (st, txt) = (r.status(), r.text().await.unwrap_or_default());
     assert!(st.is_success() && txt.to_uppercase().contains("OK"), "未知 Codex 模型应被改写后成功：{st} {txt}");
+
+    // 6f. 按应用计费：hub /usage 按各应用的 Key 汇总 new-api 实扣金额，上面调过的应用都应出现
+    let usage = loov::flows::usage("today").await.expect("usage");
+    eprintln!("今日按应用花费：{:?}，搜索 {:?}", usage.by_app, usage.search);
+    let apps: Vec<&str> = usage.by_app.iter().filter(|a| a.usd > 0.0).map(|a| a.app.as_str()).collect();
+    for want in ["claude", "agy", "desktop", "grok"] {
+        assert!(apps.contains(&want), "今日用量里应有 {want}：{apps:?}");
+    }
+    assert!(usage.search.calls >= 1, "上面调过一次云端搜索：{:?}", usage.search);
+    assert!(usage.search.bytes > 0, "搜索应记下返回字节：{:?}", usage.search);
 
     // 7. 设备列表含本机，然后登出
     let devices = loov_devices_test_hook().await.unwrap();

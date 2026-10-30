@@ -39,6 +39,8 @@ pub const CLAUDE_HARDEN_ENV: &[&str] = &[
 ];
 /// Loov 写进 Codex `config.toml` 的加固键。
 pub const CODEX_HARDEN: &[&[&str]] = &[&["features", "plugins"], &["analytics", "enabled"]];
+/// Loov 写进 Codex `config.toml` 顶层的加固键（不在任何表里）。
+pub const CODEX_HARDEN_ROOT: &[&str] = &["web_search"];
 
 const CLAUDE_FILE: &str = "claude-settings.json";
 const CODEX_CONFIG_FILE: &str = "codex-config.toml";
@@ -198,6 +200,25 @@ pub fn claude_restore_patch(original: Option<&Value>, current: &Value) -> JsonPa
             patch.set.push((KeyPath::new(&[k]), o.clone()));
         }
     }
+    // 权限档位写的 permissions.defaultMode（loov::safety）：改回原值；原来没有就删，整个 permissions
+    // 只剩它的连表删
+    let mode_of = |top: &serde_json::Map<String, Value>| top.get("permissions").and_then(|p| p.get("defaultMode")).cloned();
+    match (mode_of(cur_top), mode_of(orig_top)) {
+        (Some(c), Some(o)) if c == o => {}
+        (_, Some(o)) => patch.set.push((KeyPath::new(&["permissions", "defaultMode"]), o)),
+        (Some(_), None) => {
+            let only_mode = cur_top
+                .get("permissions")
+                .and_then(Value::as_object)
+                .is_some_and(|p| p.len() == 1);
+            if only_mode && !orig_top.contains_key("permissions") {
+                patch.remove.push(KeyPath::new(&["permissions"]));
+            } else {
+                patch.remove.push(KeyPath::new(&["permissions", "defaultMode"]));
+            }
+        }
+        (None, None) => {}
+    }
     patch
 }
 
@@ -263,6 +284,9 @@ pub fn codex_restore_patch(original: Option<&DocumentMut>, current: &DocumentMut
     for nested in floor::CODEX_FLOOR_NESTED {
         fix(&mut patch, current, orig, nested);
     }
+    for key in CODEX_HARDEN_ROOT.iter().chain(&["approval_policy", "sandbox_mode"]) {
+        fix(&mut patch, current, orig, &[key]);
+    }
     for harden in CODEX_HARDEN {
         let parent = harden[0];
         let orig_has_parent = get_path(orig, &[parent]).is_some();
@@ -294,7 +318,7 @@ fn restore_claude(state: &AppState, have_snapshot: bool) -> Result<bool, String>
         Ok(t) => serde_json::from_str(&t).map_err(|e| format!("settings.json 无法解析：{e}"))?,
         Err(_) => Value::Object(Default::default()),
     };
-    let patch = if have_snapshot {
+    let mut patch = if have_snapshot {
         let original = read_snapshot(CLAUDE_FILE)?
             .map(|b| serde_json::from_slice::<Value>(&b))
             .transpose()
@@ -311,6 +335,13 @@ fn restore_claude(state: &AppState, have_snapshot: bool) -> Result<bool, String>
             ..Default::default()
         }
     };
+    if !have_snapshot {
+        // 没有快照：权限档位只在还是 Loov 写的值时删
+        let applied = super::netmode::load_prefs().safety_applied.get(super::safety::CLAUDE_KEY).cloned();
+        if applied.is_some() && super::safety::json_str(&current, &["permissions", "defaultMode"]) == applied.as_deref() {
+            patch.remove.push(KeyPath::new(&["permissions", "defaultMode"]));
+        }
+    }
     if patch.set.is_empty() && patch.remove.is_empty() {
         return Ok(false);
     }
@@ -360,6 +391,20 @@ fn restore_codex(state: &AppState, have_snapshot: bool) -> Result<bool, String> 
 /// 没有快照时只删 Loov 自己加的加固键（整张表都是加固键时连表删）。
 pub fn codex_harden_only_patch(current: &DocumentMut) -> TomlPatch {
     let mut p = TomlPatch::default();
+    for key in CODEX_HARDEN_ROOT {
+        if get_path(current, &[key]).is_some() {
+            p.remove.push(KeyPath::new(&[key]));
+        }
+    }
+    // 权限档位只在还是 Loov 写的值时删
+    let prefs = super::netmode::load_prefs();
+    for (key, toml_key) in [(super::safety::CODEX_APPROVAL_KEY, "approval_policy"), (super::safety::CODEX_SANDBOX_KEY, "sandbox_mode")] {
+        if let Some(applied) = prefs.safety_applied.get(key) {
+            if super::safety::toml_str(current, &[toml_key]).as_deref() == Some(applied.as_str()) {
+                p.remove.push(KeyPath::new(&[toml_key]));
+            }
+        }
+    }
     for harden in CODEX_HARDEN {
         let only = get_path(current, &[harden[0]])
             .and_then(Item::as_table_like)
@@ -420,6 +465,12 @@ pub async fn restore_original(state: &AppState) -> Result<RestoreReport, String>
         }
     }
     local_auth::disable();
+    // 权限档位的写入记录随恢复一起清掉（档位选择本身保留）
+    let mut prefs = super::netmode::load_prefs();
+    if !prefs.safety_applied.is_empty() {
+        prefs.safety_applied.clear();
+        let _ = super::netmode::save_prefs(&prefs);
+    }
     if state.db.get_global_proxy_url().ok().flatten().as_deref() == Some(BLACKHOLE_PROXY) {
         let _ = state.db.set_global_proxy_url(None);
         let _ = crate::proxy::http_client::apply_proxy(None);

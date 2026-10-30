@@ -47,6 +47,12 @@ pub async fn loov_account() -> Result<Account, LoovError> {
     flows::account().await
 }
 
+/// 本账号今天 / 本月的花费（按应用、含云端搜索）与月预算。
+#[tauri::command]
+pub async fn loov_usage(range: Option<String>) -> Result<super::hub_client::Usage, LoovError> {
+    flows::usage(range.as_deref().unwrap_or("month")).await
+}
+
 #[tauri::command]
 pub async fn loov_redeem(code: String) -> Result<f64, LoovError> {
     flows::redeem(&code).await
@@ -213,6 +219,18 @@ pub async fn loov_app_launch(
 #[tauri::command]
 pub async fn loov_set_node(state: tauri::State<'_, AppState>, node: Option<String>) -> Result<Status, LoovError> {
     flows::set_selection(state.inner(), Some(node), None).await
+}
+
+/// Loov 本机偏好（节点、网络模式、权限档位），给界面显示用。
+#[tauri::command]
+pub async fn loov_prefs() -> Result<super::netmode::Prefs, LoovError> {
+    Ok(super::netmode::load_prefs())
+}
+
+/// agent 权限档位：careful / standard / full，写成各家 agent 自己的原生设置（loov::safety）。
+#[tauri::command]
+pub async fn loov_set_safety(state: tauri::State<'_, AppState>, level: super::safety::SafetyLevel) -> Result<(), LoovError> {
+    flows::set_safety(state.inner(), level)
 }
 
 /// 网络模式：direct（仅 Loov 应用走安全通道）/ rule（国外网站走通道）/ global（全部走通道）。

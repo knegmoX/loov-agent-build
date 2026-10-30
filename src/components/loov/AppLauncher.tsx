@@ -169,6 +169,7 @@ export function AppLauncher({ models, catalog, tunnelReady }: AppLauncherProps) 
   };
 
   const byId = new Map((apps ?? []).map((a) => [a.id, a]));
+  const health = useMemo(() => new Map(catalog.filter((m) => m.health).map((m) => [m.id, m.health!])), [catalog]);
 
   return (
     <>
@@ -187,6 +188,7 @@ export function AppLauncher({ models, catalog, tunnelReady }: AppLauncherProps) 
               onInstall={() => void install(id)}
               model={slot === "grok" ? (status?.model ?? undefined) : slot ? picks.value[slot] : undefined}
               modelOptions={slot ? lists[slot] : undefined}
+              modelHealth={health}
               onModelChange={
                 slot === "grok"
                   ? (m) =>
@@ -249,6 +251,7 @@ interface AppTileProps {
   onModelChange?: (model: string) => void;
   note?: string;
   installHint?: string;
+  modelHealth?: Map<string, "degraded" | "down">;
 }
 
 function AppTile({
@@ -263,6 +266,7 @@ function AppTile({
   onModelChange,
   note,
   installHint,
+  modelHealth,
 }: AppTileProps) {
   const { t } = useTranslation();
   const name = NAME[id];
@@ -344,11 +348,15 @@ function AppTile({
               <SelectValue placeholder={t("loov.pickModel")} />
             </SelectTrigger>
             <SelectContent>
-              {modelOptions.map((m) => (
-                <SelectItem key={m} value={m}>
-                  {m}
-                </SelectItem>
-              ))}
+              {modelOptions.map((m) => {
+                const h = modelHealth?.get(m);
+                return (
+                  <SelectItem key={m} value={m}>
+                    {m}
+                    {h && <span className={h === "down" ? "text-danger" : "text-warning-text"}> · {t(`loov.apps.health.${h}`)}</span>}
+                  </SelectItem>
+                );
+              })}
             </SelectContent>
           </Select>
         </div>

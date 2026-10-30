@@ -9,6 +9,8 @@ export const loovKeys = {
   meta: ["loov", "meta"] as const,
   managed: ["loov", "managed"] as const,
   apps: ["loov", "apps"] as const,
+  usage: (range: "today" | "month") => ["loov", "usage", range] as const,
+  prefs: ["loov", "prefs"] as const,
 };
 
 export function useLoovAppVersion() {
@@ -30,6 +32,21 @@ export function useLoovStatus() {
 
 export function useLoovSession(enabled: boolean) {
   return useQuery({ queryKey: loovKeys.session, queryFn: loovApi.session, enabled });
+}
+
+/** 花费统计：hub 侧按 Key 查 new-api 日志并缓存 1 分钟，这里 60 秒刷新一次 */
+export function useLoovUsage(range: "today" | "month", enabled: boolean) {
+  return useQuery({
+    queryKey: loovKeys.usage(range),
+    queryFn: () => loovApi.usage(range),
+    enabled,
+    refetchInterval: 60_000,
+    retry: 1,
+  });
+}
+
+export function useLoovPrefs() {
+  return useQuery({ queryKey: loovKeys.prefs, queryFn: loovApi.prefs });
 }
 
 export function useLoovAccount(enabled: boolean) {

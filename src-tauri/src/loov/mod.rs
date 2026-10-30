@@ -13,8 +13,10 @@
 //! 上游代码的挂载点全部带 `// loov:` 注释，rebase 时 `grep -rn "// loov:"` 核对。
 
 pub mod apps;
+pub mod attribution;
 pub mod commands;
 pub mod credentials;
+pub mod fallback;
 pub mod flows;
 pub mod gemini_route;
 pub mod hub_client;
@@ -24,6 +26,7 @@ pub mod netmode;
 pub mod privacy;
 pub mod provision;
 pub mod restore;
+pub mod safety;
 pub mod sysproxy;
 pub mod tunnel;
 
@@ -227,6 +230,18 @@ pub fn active() -> bool {
     state().creds.read().map(|c| c.is_some()).unwrap_or(false)
 }
 
+/// 内存里某个应用的 Key（hub 为每个应用单独建的，见 [`attribution`]）；没有就退回通用 Key。
+pub fn api_key_for(app: Option<&str>) -> Option<String> {
+    let per_app = app.and_then(|a| {
+        state()
+            .creds
+            .read()
+            .ok()
+            .and_then(|c| c.as_ref().and_then(|c| c.bootstrap.as_ref().and_then(|b| b.api.keys.get(a).cloned())))
+    });
+    per_app.filter(|k| !k.is_empty()).or_else(api_key)
+}
+
 /// 内存里的真实 new-api Key。
 pub fn api_key() -> Option<String> {
     state()
@@ -271,13 +286,15 @@ pub fn resolve_placeholder_key(
     provider_id: &str,
     base_url: &str,
     row_key: &str,
+    headers: &axum::http::HeaderMap,
 ) -> Result<Option<String>, crate::proxy::ProxyError> {
     let tunnel = match status() {
         Status::Ready { .. } => Ok(()),
         Status::TunnelFailed { reason } | Status::Offline { reason } => Err(reason),
         _ => Err(String::new()),
     };
-    resolve_placeholder_key_with(provider_id, base_url, row_key, trusted_api_host().as_deref(), api_key().as_deref(), tunnel)
+    let key = api_key_for(attribution::app_of(provider_id, headers));
+    resolve_placeholder_key_with(provider_id, base_url, row_key, trusted_api_host().as_deref(), key.as_deref(), tunnel)
 }
 
 fn resolve_placeholder_key_with(

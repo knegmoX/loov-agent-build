@@ -279,6 +279,8 @@ pub fn agy_launch_spec(
         .ok_or_else(|| app_error("INTERNAL", "Antigravity 私有目录创建失败"))?;
     disable_agy_telemetry(&dir)?;
     let mut args = vec![format!("--gemini_dir={}", dir.to_string_lossy())];
+    // 权限档位（loov::safety）：agy 的执行模式只能在启动参数里给
+    args.extend(super::safety::agy_args(super::netmode::load_prefs().safety));
     if !model.is_empty() {
         args.push(format!("--model={model}"));
     }

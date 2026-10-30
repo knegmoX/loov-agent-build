@@ -901,6 +901,64 @@ impl RequestForwarder {
                         .await);
                 }
                 Err(mut e) => {
+                    // loov: 模型故障时在同一网关内换模型重试（loov::fallback；聚合模式下上游的故障转移不生效）
+                    if crate::loov::provision::is_loov_provider(&provider.id)
+                        && crate::loov::fallback::should_fallback(&e)
+                    {
+                        let requested = provider_body.get("model").and_then(Value::as_str).map(str::to_string);
+                        for alt in requested
+                            .as_deref()
+                            .map(|m| crate::loov::fallback::next_models(&provider.id, m))
+                            .unwrap_or_default()
+                        {
+                            let from = requested.clone().unwrap_or_default();
+                            log::warn!("[{app_type_str}] [Loov] 模型 {from} 上游出错（{e}），改用 {alt} 重试");
+                            let mut alt_body = provider_body.clone();
+                            alt_body["model"] = Value::String(alt.clone());
+                            let mut alt_codex_upstream_format = None;
+                            match self
+                                .forward(
+                                    app_type,
+                                    &method,
+                                    provider,
+                                    endpoint,
+                                    &alt_body,
+                                    &headers,
+                                    &extensions,
+                                    adapter.as_ref(),
+                                    &mut alt_codex_upstream_format,
+                                )
+                                .await
+                            {
+                                Ok(forwarded) => {
+                                    if let Some(handle) = &self.app_handle {
+                                        use tauri::Emitter;
+                                        let _ = handle.emit(
+                                            crate::loov::fallback::FALLBACK_EVENT,
+                                            serde_json::json!({ "from": from, "to": alt, "app": app_type_str }),
+                                        );
+                                    }
+                                    return Ok(self
+                                        .finish_success(
+                                            provider,
+                                            app_type_str,
+                                            used_half_open_permit,
+                                            forwarded,
+                                            alt_codex_upstream_format,
+                                        )
+                                        .await);
+                                }
+                                Err(retry_err) => {
+                                    log::warn!("[{app_type_str}] [Loov] 回退模型 {alt} 也失败：{retry_err}");
+                                    let again = crate::loov::fallback::should_fallback(&retry_err);
+                                    e = retry_err;
+                                    if !again {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     // 检测是否需要触发整流器（仅 Claude/ClaudeAuth 供应商）
                     let provider_type = ProviderType::from_app_type_and_config(app_type, provider);
                     let is_anthropic_provider = matches!(
@@ -2114,7 +2172,7 @@ impl RequestForwarder {
             // 审计 S1-01：注入前必须校验供应商是 Loov 托管子供应商且出站 host 为 bootstrap 下发的受信 host，
             // 否则（员工自建占位供应商 / base_url 指向任意地址）拒绝，防止真实公司 Key 被导出。
             if let Some(real) =
-                crate::loov::resolve_placeholder_key(&provider.id, &base_url, &auth.api_key)?
+                crate::loov::resolve_placeholder_key(&provider.id, &base_url, &auth.api_key, headers)?
             {
                 auth = AuthInfo::new(real, auth.strategy);
             }
@@ -2710,6 +2768,8 @@ impl RequestForwarder {
         }
 
         // loov: 隐私整流器（请求头）：出站头已定稿、hyper / reqwest 两条路径分叉之前
+        // loov: 声明来源应用的头只在本机用（选 Key），不发往上游
+        ordered_headers.remove(crate::loov::attribution::APP_HEADER);
         if crate::loov::privacy::headers_apply(&provider.id) {
             let changed = crate::loov::privacy::rewrite_headers(&mut ordered_headers);
             if !changed.is_empty() {

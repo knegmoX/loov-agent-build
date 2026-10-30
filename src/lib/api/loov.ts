@@ -21,6 +21,15 @@ export type LoovStatus =
       net: LoovNetView;
     };
 
+/** agent 权限档位：写成各家 agent 自己的原生设置（src-tauri/src/loov/safety.rs） */
+export type LoovSafetyLevel = "careful" | "standard" | "full";
+
+export interface LoovPrefs {
+  node: string | null;
+  mode: LoovNetMode;
+  safety: LoovSafetyLevel;
+}
+
 /** 网络模式：仅 Loov 应用走通道 / 国外网站走通道 / 全部走通道 */
 export type LoovNetMode = "direct" | "rule" | "global";
 
@@ -41,6 +50,20 @@ export interface LoovNetView {
   mode: LoovNetMode;
   sys_proxy: string | null;
   sys_error: string | null;
+}
+
+/** 本账号的花费（hub /usage）：按应用汇总 new-api 实扣金额 + 云端搜索成本，以及月预算 */
+export interface LoovUsage {
+  range: "today" | "month";
+  from: number;
+  to: number;
+  totalUsd: number;
+  /** app：claude / codex / codexdesk / agy / grok / desktop / feishu；other 是老设备的通用 Key */
+  byApp: { app: string; usd: number }[];
+  search: { calls: number; bytes: number; usd: number };
+  budgetUsd: number | null;
+  monthUsd: number;
+  budgetBlocked: boolean;
 }
 
 export interface LoovAccount {
@@ -64,6 +87,16 @@ export interface LoovModelEntry {
   id: string;
   kind: string;
   recommended: boolean;
+  /** 近 30 分钟的健康度（hub 按 new-api 日志判断）；正常时没有 */
+  health?: "degraded" | "down";
+}
+
+/** 模型故障时本地路由在同一网关内改用别的模型（src-tauri/src/loov/fallback.rs） */
+export const LOOV_FALLBACK_EVENT = "loov-model-fallback";
+export interface LoovFallbackNotice {
+  from: string;
+  to: string;
+  app: string;
 }
 
 export interface LoovSession {
@@ -153,6 +186,7 @@ export const loovApi = {
   logout: () => invoke<void>("loov_logout"),
   refresh: () => invoke<LoovStatus>("loov_refresh"),
   account: () => invoke<LoovAccount>("loov_account"),
+  usage: (range: "today" | "month") => invoke<LoovUsage>("loov_usage", { range }),
   redeem: (code: string) => invoke<number>("loov_redeem", { code }),
   devices: () => invoke<LoovDevice[]>("loov_devices"),
   revokeDevice: (id: string) => invoke<void>("loov_revoke_device", { id }),
@@ -168,6 +202,8 @@ export const loovApi = {
   appSetModel: (id: LoovAppId, model: string) => invoke<void>("loov_app_set_model", { id, model }),
   setNode: (node: string | null) => invoke<LoovStatus>("loov_set_node", { node }),
   setNetMode: (mode: LoovNetMode) => invoke<LoovStatus>("loov_set_net_mode", { mode }),
+  prefs: () => invoke<LoovPrefs>("loov_prefs"),
+  setSafety: (level: LoovSafetyLevel) => invoke<void>("loov_set_safety", { level }),
 };
 
 /** 比较点分版本号（只看数字段，缺省按 0）：a<b 返回负数，相等 0，a>b 正数。 */

@@ -273,6 +273,18 @@ pub async fn set_selection(state: &AppState, node: Option<Option<String>>, mode:
     }
 }
 
+/// 改 agent 权限档位：存进 prefs，并立即重写 Claude Code / Codex 的配置（Grok 在下次从 Loov 页启动时写，
+/// agy 在启动参数里带）。员工自己在 agent 里改过的值不覆盖。
+pub fn set_safety(state: &AppState, level: super::safety::SafetyLevel) -> Result<(), LoovError> {
+    let mut prefs = netmode::load_prefs();
+    prefs.safety = level;
+    netmode::save_prefs(&prefs).map_err(|message| LoovError::Internal { message })?;
+    if super::active() {
+        harden(state);
+    }
+    Ok(())
+}
+
 /// 用缓存的配置整条重建链路（重新探测节点），并重写加固键。
 async fn reconnect(state: &AppState) -> Result<Status, LoovError> {
     let b = super::credentials().and_then(|c| c.bootstrap).ok_or(LoovError::NotLoggedIn)?;
@@ -289,8 +301,14 @@ fn spawn_watchdog(state: &AppState) {
     ONCE.call_once(move || {
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(15));
+            let mut n: u64 = 0;
             loop {
                 tick.tick().await;
+                n += 1;
+                // 每 5 分钟刷新一次模型健康度与回退链（hub 按 new-api 日志判断）
+                if n % 20 == 0 {
+                    refresh_models().await;
+                }
                 let died = {
                     let mut g = super::state().tunnel.lock().await;
                     let dead = g.as_mut().is_some_and(|h| !h.is_alive());
@@ -481,6 +499,33 @@ pub async fn refresh(state: &AppState) -> Result<Status, LoovError> {
 
 pub async fn account() -> Result<Account, LoovError> {
     Ok(hub().account(&token()?).await?)
+}
+
+/// 刷新内存里的模型目录、健康度与回退链（不落盘、不重建链路）。失败只记日志。
+pub async fn refresh_models() {
+    let Ok(t) = token() else { return };
+    if !matches!(super::status(), Status::Ready { .. }) {
+        return;
+    }
+    match hub().models(&t).await {
+        Ok(list) => {
+            if let Some(mut c) = super::credentials() {
+                if let Some(b) = c.bootstrap.as_mut() {
+                    if !list.models.is_empty() {
+                        b.models = list.models;
+                    }
+                    b.model_catalog = list.model_catalog;
+                    b.model_fallbacks = list.model_fallbacks;
+                }
+                super::set_credentials(Some(c));
+            }
+        }
+        Err(e) => log::debug!("[loov] 刷新模型目录失败：{e}"),
+    }
+}
+
+pub async fn usage(range: &str) -> Result<super::hub_client::Usage, LoovError> {
+    Ok(hub().usage(&token()?, range).await?)
 }
 
 pub async fn redeem(code: &str) -> Result<f64, LoovError> {

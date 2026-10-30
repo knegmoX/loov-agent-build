@@ -4955,7 +4955,11 @@
       "hint": "卡片上的下拉是默认模型；在各应用里也能切换 Loov 的全部模型（Claude Code / Codex / Grok 用 /model，Claude Desktop、Codex 桌面版用模型菜单）。也可以在任意终端直接运行 claude 或 codex，同样经 Loov 计费。",
       "codexDesktopNote": "与 Codex 共用默认模型，可在桌面版的模型选择器里切换公司模型",
       "bigDownload": "安装包约 1GB，首次安装较慢，请耐心等待",
-      "desktopNote": "在 Desktop 的模型菜单里可选 Loov 的全部模型"
+      "desktopNote": "在 Desktop 的模型菜单里可选 Loov 的全部模型",
+      "health": {
+        "down": "暂不可用",
+        "degraded": "不稳定"
+      }
     },
     "backToSimple": "返回简洁模式",
     "net": {
@@ -4979,6 +4983,39 @@
       "ackTitle": "接管系统代理？",
       "ackDesc": "代理和全局模式会把系统代理指向 Loov 的安全通道，浏览器等应用上网都会经过公司节点。切回直连、断开或退出 Loov 时，会还原成你原来的设置。",
       "ackOk": "继续"
+    },
+    "usage": {
+      "month": "本月",
+      "today": "今日",
+      "details": "明细",
+      "none": "本月还没有花费",
+      "search": "云端搜索 {{calls}} 次",
+      "unavailable": "暂时取不到花费统计",
+      "blocked": "本月预算已用完，模型调用已暂停。请联系管理员调整预算。",
+      "nearBudget": "本月预算已用 {{percent}}%",
+      "apps": {
+        "codexdesk": "Codex 桌面版",
+        "feishu": "飞书渠道",
+        "other": "其他"
+      }
+    },
+    "fallbackNotice": "{{from}} 暂时不可用，已自动改用 {{to}}（按 {{to}} 计费）",
+    "safety": {
+      "label": "agent 权限",
+      "levels": {
+        "careful": "谨慎",
+        "standard": "标准",
+        "full": "完全"
+      },
+      "hint": {
+        "careful": "改文件、执行命令前都先问你；Codex 只读",
+        "standard": "自动改工作目录里的文件，执行命令前先问你",
+        "full": "不再询问，agent 可以执行任何操作"
+      },
+      "saved": "已更新 agent 权限（在 agent 里自己改过的设置不受影响）",
+      "fullTitle": "切换到完全权限？",
+      "fullDesc": "各 agent 将不再询问就修改文件、执行命令，误操作可能删除数据。只建议在隔离的环境（如专用云服务器）里使用。",
+      "fullOk": "确认切换"
     }
   }
 }

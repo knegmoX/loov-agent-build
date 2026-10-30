@@ -31,6 +31,10 @@ pub enum NetMode {
 pub struct Prefs {
     pub node: Option<String>,
     pub mode: NetMode,
+    /// agent 权限档位（`loov::safety`）
+    pub safety: super::safety::SafetyLevel,
+    /// Loov 上次写进各家配置的权限值（键见 `safety::*_KEY`）：员工改过的不覆盖，恢复时据此清除
+    pub safety_applied: std::collections::BTreeMap<String, String>,
 }
 
 fn prefs_path() -> PathBuf {
@@ -380,9 +384,9 @@ mod tests {
         let p = Prefs::default();
         assert_eq!(p.node, None);
         assert_eq!(p.mode, NetMode::Direct);
-        let p = Prefs { node: Some("tw1".into()), mode: NetMode::Rule };
+        let p = Prefs { node: Some("tw1".into()), mode: NetMode::Rule, ..Default::default() };
         let text = serde_json::to_string(&p).unwrap();
-        assert_eq!(text, r#"{"node":"tw1","mode":"rule"}"#);
+        assert!(text.starts_with(r#"{"node":"tw1","mode":"rule","safety":"standard""#), "{text}");
         assert_eq!(serde_json::from_str::<Prefs>(&text).unwrap(), p);
         // 旧文件 / 缺字段：用默认值
         assert_eq!(serde_json::from_str::<Prefs>("{}").unwrap(), Prefs::default());

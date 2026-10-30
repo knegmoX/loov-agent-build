@@ -490,6 +490,10 @@ pub fn sync_grok_models(state: &AppState) -> Result<(), AppError> {
                 t["base_url"] = toml_edit::value(base.clone());
                 t["api_key"] = toml_edit::value(token.clone());
                 t["api_backend"] = toml_edit::value("responses");
+                // 经 Codex 入口转发：声明来源，计费与用量记在 Grok 名下（loov::attribution）
+                let mut headers = toml_edit::InlineTable::new();
+                headers.insert(super::attribution::APP_HEADER, "grok".into());
+                t["extra_headers"] = toml_edit::Item::Value(toml_edit::Value::InlineTable(headers));
                 if let Some(w) = window {
                     t["context_window"] = toml_edit::value(w as i64);
                 }
@@ -497,20 +501,50 @@ pub fn sync_grok_models(state: &AppState) -> Result<(), AppError> {
             }
         }
     }
-    write_grok_extra(&state.db, set)
+    // 权限档位写成 Grok 的 `[ui] permission_mode`（员工自己改过的不动）
+    let grok_applied = {
+        use super::safety::*;
+        let prefs = super::netmode::load_prefs();
+        let want = grok_mode(prefs.safety);
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(crate::grok_config::get_grok_config_path())
+            .ok()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or_default();
+        let cur = toml_str(&doc, &["ui", "permission_mode"]);
+        should_write(cur.as_deref(), prefs.safety_applied.get(GROK_KEY).map(String::as_str), want).then(|| {
+            set.push((KeyPath::new(&["ui", "permission_mode"]), toml_edit::value(want)));
+            want
+        })
+    };
+    write_grok_extra(&state.db, set, Vec::new())?;
+    if let Some(v) = grok_applied {
+        record_safety(super::safety::GROK_KEY, v);
+    }
+    Ok(())
 }
 
-/// 清掉 Loov 写的额外模型表（恢复原配置时）。
+/// 清掉 Loov 写的额外模型表与权限档位（恢复原配置时；权限档位只在还是 Loov 写的值时删）。
 pub fn remove_grok_models(db: &Database) -> Result<(), AppError> {
-    write_grok_extra(db, Vec::new())
+    let mut extra = Vec::new();
+    if let Some(applied) = super::netmode::load_prefs().safety_applied.get(super::safety::GROK_KEY) {
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(crate::grok_config::get_grok_config_path())
+            .ok()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or_default();
+        if super::safety::toml_str(&doc, &["ui", "permission_mode"]).as_deref() == Some(applied.as_str()) {
+            extra.push(KeyPath::new(&["ui", "permission_mode"]));
+        }
+    }
+    write_grok_extra(db, Vec::new(), extra)
 }
 
-fn write_grok_extra(db: &Database, set: Vec<(KeyPath, toml_edit::Item)>) -> Result<(), AppError> {
-    let keep: Vec<String> = set.iter().filter_map(|(k, _)| k.0.last().cloned()).collect();
+fn write_grok_extra(db: &Database, set: Vec<(KeyPath, toml_edit::Item)>, extra_remove: Vec<KeyPath>) -> Result<(), AppError> {
+    let keep: Vec<String> = set.iter().filter(|(k, _)| k.0.first().map(String::as_str) == Some("model")).filter_map(|(k, _)| k.0.last().cloned()).collect();
     let remove: Vec<KeyPath> = grok_extra_tables_on_disk()
         .into_iter()
         .filter(|k| !keep.contains(k))
         .map(|k| KeyPath::new(&["model", &k]))
+        .chain(extra_remove)
         .collect();
     if set.is_empty() && remove.is_empty() {
         return Ok(());
@@ -677,9 +711,39 @@ pub fn claude_harden_patch(proxy_url: Option<&str>) -> JsonPatch {
 }
 
 pub fn harden_claude(db: &Database, proxy_url: Option<&str>) -> Result<(), AppError> {
-    let patch = claude_harden_patch(proxy_url);
+    let mut patch = claude_harden_patch(proxy_url);
+    let applied = claude_safety(&mut patch);
     claude_direct::run(db, OP_HARDEN, Some(&patch), PendingTarget::default())?;
+    if let Some(v) = applied {
+        record_safety(super::safety::CLAUDE_KEY, v);
+    }
     Ok(())
+}
+
+/// 把权限档位写成 Claude Code 的 `permissions.defaultMode`（员工自己改过的不动）。返回写入的值。
+fn claude_safety(patch: &mut JsonPatch) -> Option<&'static str> {
+    use super::safety::*;
+    let prefs = super::netmode::load_prefs();
+    let want = claude_mode(prefs.safety);
+    let current: Value = std::fs::read_to_string(crate::config::get_claude_settings_path())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null);
+    let cur = json_str(&current, &["permissions", "defaultMode"]);
+    if !should_write(cur, prefs.safety_applied.get(CLAUDE_KEY).map(String::as_str), want) {
+        return None;
+    }
+    patch.set.push((KeyPath::new(&["permissions", "defaultMode"]), json!(want)));
+    Some(want)
+}
+
+/// 记下 Loov 写进某个配置的权限值（下次判断员工有没有改过、恢复时清除）。
+fn record_safety(key: &str, value: &str) {
+    let mut prefs = super::netmode::load_prefs();
+    if prefs.safety_applied.get(key).map(String::as_str) != Some(value) {
+        prefs.safety_applied.insert(key.to_string(), value.to_string());
+        let _ = super::netmode::save_prefs(&prefs);
+    }
 }
 
 /// 撤掉加固键（用户彻底退出 Loov 模式时）。
@@ -702,26 +766,51 @@ pub fn unharden_claude(db: &Database) -> Result<(), AppError> {
 }
 
 /// Codex 加固：关闭插件市场与遥测外连（否则会连 api.github.com / chatgpt.com）。
+/// Codex 加固键。`web_search = "disabled"`：Codex 自带的网页搜索是 OpenAI 托管工具，经公司网关不可用
+/// （new-api 日志：GPT 直接 400「Hosted tools are not supported on Google Cloud」，转给 Claude 时被丢弃），
+/// 关掉后模型改用 Loov 下发的云端搜索 MCP（loov-search），同样经公司计费。
 pub fn codex_harden_patch() -> TomlPatch {
     TomlPatch {
         set: vec![
             (KeyPath::new(&["features", "plugins"]), toml_edit::value(false)),
             (KeyPath::new(&["analytics", "enabled"]), toml_edit::value(false)),
+            (KeyPath::new(&["web_search"]), toml_edit::value("disabled")),
         ],
         ..Default::default()
     }
 }
 
 pub fn harden_codex(db: &Database) -> Result<(), AppError> {
-    let patch = codex_harden_patch();
+    let mut patch = codex_harden_patch();
     let path = crate::codex_config::get_codex_config_path();
+    let applied = codex_safety(&mut patch, &path);
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let write = AppWrite::begin(db, AppType::Codex.as_str())?;
     let changes = [FileChange { file: LiveFile::private(path), patch: &patch }];
     write.run(OP_HARDEN, &changes, PendingTarget::default())?;
+    for (key, v) in applied {
+        record_safety(key, v);
+    }
     Ok(())
+}
+
+/// 把权限档位写成 Codex 的 `approval_policy` / `sandbox_mode`（顶层键；员工自己改过的不动）。
+fn codex_safety(patch: &mut TomlPatch, path: &std::path::Path) -> Vec<(&'static str, &'static str)> {
+    use super::safety::*;
+    let prefs = super::netmode::load_prefs();
+    let (approval, sandbox) = codex_policy(prefs.safety);
+    let doc: toml_edit::DocumentMut = std::fs::read_to_string(path).ok().and_then(|t| t.parse().ok()).unwrap_or_default();
+    let mut applied = Vec::new();
+    for (key, toml_key, want) in [(CODEX_APPROVAL_KEY, "approval_policy", approval), (CODEX_SANDBOX_KEY, "sandbox_mode", sandbox)] {
+        let cur = toml_str(&doc, &[toml_key]);
+        if should_write(cur.as_deref(), prefs.safety_applied.get(key).map(String::as_str), want) {
+            patch.set.push((KeyPath::new(&[toml_key]), toml_edit::value(want)));
+            applied.push((key, want));
+        }
+    }
+    applied
 }
 
 /// 云端搜索 MCP 条目的保留 id（UnifiedMcpPanel 对 tag=loov 的条目禁止编辑 / 删除）。
@@ -778,7 +867,8 @@ mod tests {
         Bootstrap {
             user: HubUser { username: "u".into() },
             device: HubDevice { id: "d".into(), name: "n".into() },
-            api: ApiInfo { base_url: "https://me.loov.cc/".into(), key: "sk-x".into() },
+            api: ApiInfo { base_url: "https://me.loov.cc/".into(), key: "sk-x".into(), keys: Default::default() },
+            model_fallbacks: Default::default(),
             tunnel: TunnelProfile { version: 1, nodes: vec![] },
             models: models.iter().map(|s| s.to_string()).collect(),
             model_catalog: catalog,
@@ -801,9 +891,9 @@ mod tests {
         let b = bootstrap(
             &[],
             vec![
-                ModelEntry { id: "claude-sonnet-5".into(), kind: "anthropic".into(), recommended: false },
-                ModelEntry { id: "claude-opus-5-5".into(), kind: "anthropic".into(), recommended: true },
-                ModelEntry { id: "gpt-6-sol".into(), kind: "openai".into(), recommended: true },
+                ModelEntry { id: "claude-sonnet-5".into(), kind: "anthropic".into(), recommended: false, health: None },
+                ModelEntry { id: "claude-opus-5-5".into(), kind: "anthropic".into(), recommended: true, health: None },
+                ModelEntry { id: "gpt-6-sol".into(), kind: "openai".into(), recommended: true, health: None },
             ],
         );
         let p = pick_models(&b);
@@ -816,8 +906,8 @@ mod tests {
         let b = bootstrap(
             &[],
             vec![
-                ModelEntry { id: "claude-sonnet-5".into(), kind: "anthropic".into(), recommended: true },
-                ModelEntry { id: "gpt-6-sol".into(), kind: "openai".into(), recommended: false },
+                ModelEntry { id: "claude-sonnet-5".into(), kind: "anthropic".into(), recommended: true, health: None },
+                ModelEntry { id: "gpt-6-sol".into(), kind: "openai".into(), recommended: false, health: None },
             ],
         );
         let p = pick_models(&b);
@@ -925,6 +1015,9 @@ mod tests {
         assert!(s.contains("[features]") && s.contains("plugins = false"), "{s}");
         assert!(s.contains("[analytics]") && s.contains("enabled = false"), "{s}");
         assert!(s.starts_with("model = \"gpt-6-sol\""));
+        // 顶层键写在第一张表之前，Codex 才会当作顶层设置读
+        let ws = s.find("web_search = \"disabled\"").expect("web_search");
+        assert!(ws < s.find("[features]").unwrap(), "{s}");
     }
 
     #[test]
@@ -939,8 +1032,8 @@ mod tests {
         let rec = bootstrap(
             &[],
             vec![
-                ModelEntry { id: "gemini-3.8-flash".into(), kind: "gemini".into(), recommended: false },
-                ModelEntry { id: "gemini-4-argon".into(), kind: "gemini".into(), recommended: true },
+                ModelEntry { id: "gemini-3.8-flash".into(), kind: "gemini".into(), recommended: false, health: None },
+                ModelEntry { id: "gemini-4-argon".into(), kind: "gemini".into(), recommended: true, health: None },
             ],
         );
         assert_eq!(pick_models(&rec).gemini.as_deref(), Some("gemini-4-argon"));
