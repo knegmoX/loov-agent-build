@@ -62,6 +62,17 @@ pub enum Phase {
     Hardened = 4,
 }
 
+/// 服务器常驻进程（`loov-agent serve`）：信号由宿主处理，不接管系统代理。
+static HEADLESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_headless() {
+    HEADLESS.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn headless() -> bool {
+    HEADLESS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 static PHASE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// 挂载点到达 `p`。必须紧接上一阶段；第一个阶段（黑洞）开启跟踪。
@@ -359,21 +370,28 @@ mod tests {
 
     /// 审计 S6-02：合并上游后挂载点若被挪动 / 删除，这里先失败。
     #[test]
-    fn lib_rs_mount_points_stay_in_order() {
-        let lib = include_str!("../lib.rs");
-        let pos = |needle: &str| lib.find(needle).unwrap_or_else(|| panic!("lib.rs 缺少挂载点 `{needle}`"));
+    fn startup_mount_points_stay_in_order() {
+        // 启动顺序只在 core_boot 里定义一次：桌面版与服务器常驻进程都调它
+        let boot = include_str!("../core_boot.rs");
+        let pos = |needle: &str| boot.find(needle).unwrap_or_else(|| panic!("core_boot.rs 缺少挂载点 `{needle}`"));
         let order = [
             "startup_mark(crate::loov::Phase::BlackholePinned)",
             "crate::proxy::http_client::init(proxy_url.as_deref())",
-            "crate::loov::flows::startup(&state).await",
+            "crate::loov::flows::startup(state).await",
             "startup_mark(crate::loov::Phase::LoovStarted)",
-            "crate::mode::controller::startup(&state).await",
+            "crate::mode::controller::startup(state).await",
             "startup_mark(crate::loov::Phase::UpstreamStarted)",
-            "crate::loov::flows::post_startup(&state).await",
+            "crate::loov::flows::post_startup(state).await",
             "startup_mark(crate::loov::Phase::Hardened)",
         ];
         for w in order.windows(2) {
             assert!(pos(w[0]) < pos(w[1]), "`{}` 必须在 `{}` 之前", w[0], w[1]);
+        }
+        // 两个入口都要先初始化出站客户端，再启动核心
+        for (name, src) in [("lib.rs", include_str!("../lib.rs")), ("headless/serve.rs", include_str!("../headless/serve.rs"))] {
+            let init = src.find("crate::core_boot::init_outbound(").unwrap_or_else(|| panic!("{name} 缺少 init_outbound"));
+            let start = src.find("crate::core_boot::start(").unwrap_or_else(|| panic!("{name} 缺少 core_boot::start"));
+            assert!(init < start, "{name}：init_outbound 必须在 core_boot::start 之前");
         }
         let controller = include_str!("../mode/controller.rs");
         assert!(

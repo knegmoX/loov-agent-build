@@ -133,10 +133,16 @@ jobs:
           set -euo pipefail
           app=$(find "src-tauri/target/${TARGET}/release/bundle/macos" -maxdepth 1 -name '*.app' | head -1)
           codesign -dv "$app/Contents/MacOS/xray" 2>&1 | head -4 || true
+          # 先把输出整个读进变量再取首行：管道接 head 时 xray 可能在 head 退出后还在写，pipefail 下会 SIGPIPE（141）
           if [ "${TARGET}" = "aarch64-apple-darwin" ]; then
-            "$app/Contents/MacOS/xray" version | head -1
+            out=$("$app/Contents/MacOS/xray" version)
+            printf '%s\n' "${out%%$'\n'*}"
           else
-            arch -x86_64 "$app/Contents/MacOS/xray" version | head -1 || echo "x64 冒烟跳过（runner 无 Rosetta）"
+            if out=$(arch -x86_64 "$app/Contents/MacOS/xray" version 2>/dev/null); then
+              printf '%s\n' "${out%%$'\n'*}"
+            else
+              echo "x64 冒烟跳过（runner 无 Rosetta）"
+            fi
           fi
           ls "$app/Contents/Resources/xray-assets"
 

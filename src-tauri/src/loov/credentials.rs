@@ -54,13 +54,28 @@ pub fn key_path() -> PathBuf {
 
 fn machine_ikm() -> Vec<u8> {
     let mid = machine_uid::get().unwrap_or_else(|_| "no-machine-id".to_string());
-    let user = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "user".to_string());
+    let user = current_user();
     let mut ikm = mid.into_bytes();
     ikm.push(0);
     ikm.extend_from_slice(user.as_bytes());
     ikm
+}
+
+/// 当前用户名。Unix 上取进程实际用户（getpwuid）：systemd、cron、`env -i` 启动时可能没有 `$USER`，
+/// 不能因此解不开凭据；取不到再看环境变量。
+fn current_user() -> String {
+    #[cfg(unix)]
+    unsafe {
+        let pw = libc::getpwuid(libc::geteuid());
+        if !pw.is_null() && !(*pw).pw_name.is_null() {
+            if let Ok(name) = std::ffi::CStr::from_ptr((*pw).pw_name).to_str() {
+                if !name.is_empty() {
+                    return name.to_string();
+                }
+            }
+        }
+    }
+    std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "user".to_string())
 }
 
 fn derive_key() -> Key<Aes256Gcm> {

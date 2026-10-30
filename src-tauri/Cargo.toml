@@ -1,6 +1,6 @@
 [package]
 name = "cc-switch"
-version = "0.1.9"
+version = "0.2.0"
 description = "Loov Agent - use Claude Code and Codex through the Loov secure channel" # loov
 authors = ["Jason Young"]
 license = "MIT"

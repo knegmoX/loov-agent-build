@@ -12,6 +12,8 @@ mod codex_history_migration;
 mod codex_rollout_file;
 mod codex_state_db;
 mod commands;
+pub mod core_boot;
+pub mod headless;
 mod config;
 // loov: Loov Agent 专属后端（登录 / 隧道 / 供应商写入 / 本地路由鉴权）
 pub mod loov;
@@ -484,6 +486,23 @@ pub fn run() {
             // 预先刷新 Store 覆盖配置，确保后续路径读取正确（日志/数据库等）
             app_store::refresh_app_config_dir_override(app.handle());
             panic_hook::init_app_config_dir(crate::config::get_app_config_dir());
+
+            // loov: 本机只允许一个 Loov 核心。服务器模式（loov-agent serve）在跑时不再起桌面版的核心，
+            // 提示后退出（两者会抢本地路由端口、清理对方的 xray）
+            match crate::core_boot::acquire_core_lock() {
+                Ok(lock) => {
+                    static CORE_LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+                    let _ = CORE_LOCK.set(lock);
+                }
+                Err(msg) => {
+                    log::error!("[loov] {msg}");
+                    app.dialog()
+                        .message(format!("{msg}。\n如果在这台机器上运行了 loov-agent serve，请先停止它。"))
+                        .title("Loov Agent")
+                        .show(|_| std::process::exit(1));
+                    return Ok(());
+                }
+            }
 
             // 初始化日志（输出到 <app_config_dir>/logs/loov-agent.log）
             {
@@ -1261,77 +1280,16 @@ pub fn run() {
                 app.manage(commands::AgyAccountState(Arc::new(manager)));
             }
 
-            // 初始化全局出站代理 HTTP 客户端
-            {
-                let db = &app.state::<AppState>().db;
-                // loov: 已登录的设备上游代理固定黑洞，进程第一毫秒起就不会直连
-                if crate::loov::credentials::credentials_path().exists() {
-                    let _ = db.set_global_proxy_url(Some(crate::loov::BLACKHOLE_PROXY));
-                }
-                crate::loov::startup_mark(crate::loov::Phase::BlackholePinned);
-                let proxy_url = db.get_global_proxy_url().ok().flatten();
-
-                if let Err(e) = crate::proxy::http_client::init(proxy_url.as_deref()) {
-                    log::error!(
-                        "[GlobalProxy] [GP-005] Failed to initialize with saved config: {e}"
-                    );
-
-                    // 清除无效的代理配置
-                    if proxy_url.is_some() {
-                        log::warn!(
-                            "[GlobalProxy] [GP-006] Clearing invalid proxy config from database"
-                        );
-                        if let Err(clear_err) = db.set_global_proxy_url(None) {
-                            log::error!(
-                                "[GlobalProxy] [GP-007] Failed to clear invalid config: {clear_err}"
-                            );
-                        }
-                    }
-
-                    // 使用直连模式重新初始化
-                    if let Err(fallback_err) = crate::proxy::http_client::init(None) {
-                        log::error!(
-                            "[GlobalProxy] [GP-008] Failed to initialize direct connection: {fallback_err}"
-                        );
-                    }
-                }
-            }
+            // 初始化全局出站代理 HTTP 客户端（loov: 已登录时先固定黑洞，见 core_boot）
+            crate::core_boot::init_outbound(&app.state::<AppState>().db);
 
             // 异常退出恢复 + 代理状态自动恢复
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = app_handle.state::<AppState>();
 
-                // 必须排在 auto-extract 之前：先把历史泄漏进 Gemini 共享片段的凭据
-                // 清干净，否则紧接着的提取会基于被污染的 live 再写一遍。
-                if let Err(e) =
-                    crate::services::provider::ProviderService::scrub_leaked_gemini_common_config(
-                        &state,
-                    )
-                    .await
-                {
-                    log::warn!("清理 Gemini 通用配置泄漏凭据失败: {e}");
-                }
-
-                initialize_common_config_snippets(&state);
-
-                // 定下各应用的直连 / 代理模式（处理旧版遗留的接管状态），再把代理模式的
-                // 应用接上。要排在通用配置片段的自动提取之后：它读的是直连的 live。
-                // loov: 先拉配置、起隧道、写供应商行，再让上游把代理模式的应用接上
-                let loov_status = crate::loov::flows::startup(&state).await;
-                log::info!("[loov] 启动状态: {:?}", loov_status.redacted());
-                crate::loov::startup_mark(crate::loov::Phase::LoovStarted);
-                crate::mode::controller::startup(&state).await;
-                crate::loov::startup_mark(crate::loov::Phase::UpstreamStarted);
-                // loov: 接上之后写 CLI 加固键（HTTPS_PROXY 等不在投影范围内，单独补）
-                crate::loov::flows::post_startup(&state).await;
-                crate::loov::startup_mark(crate::loov::Phase::Hardened);
-                // #8268 测试版给 agy 装过包装脚本、改过 shell 启动文件，撤掉带标记的部分。
-                if let Err(e) =
-                    crate::services::provider::agy_direct::migrate_legacy_launcher(&state.db)
-                {
-                    log::warn!("清理旧版 agy 启动器失败: {e}");
-                }
+                // loov: 定下各应用的模式、拉起 Loov 链路、接上代理模式的应用、写加固键（顺序见 core_boot）
+                let _ = crate::core_boot::start(&state).await;
                 // 启动流程走完：托盘这时才开始报「路由服务没在运行」，并记下退回直连的应用。
                 crate::tray::mark_startup_settled(&app_handle);
                 // Codex 官方做路由、发布了 Stack 模型时，官方模型列表过期就在后台刷新。
@@ -2065,7 +2023,7 @@ pub(crate) fn remove_tray_icon_before_exit(app_handle: &tauri::AppHandle) {
     }
 }
 
-fn initialize_common_config_snippets(state: &store::AppState) {
+pub(crate) fn initialize_common_config_snippets(state: &store::AppState) {
     // Auto-extract common config snippets from clean live files when snippet is missing.
     // This must run before proxy mode is re-attached on startup, otherwise we'd read
     // proxy-placeholder configs instead of the user's actual live settings. A client

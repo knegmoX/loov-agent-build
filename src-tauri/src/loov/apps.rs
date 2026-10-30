@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
 
 use super::flows::LoovError;
 use super::Status;
@@ -82,16 +81,19 @@ pub struct LoovAppStatus {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct InstallProgress {
-    app: &'static str,
+pub struct InstallProgress {
+    pub app: &'static str,
     /// download / install / configure / done
-    stage: &'static str,
+    pub stage: &'static str,
     /// 0..=100；不确定进度（npm、安装脚本）时为空
-    percent: Option<f64>,
+    pub percent: Option<f64>,
 }
 
-fn emit(handle: &AppHandle, app: App, stage: &'static str, percent: Option<f64>) {
-    let _ = handle.emit(INSTALL_EVENT, InstallProgress { app: app.id(), stage, percent });
+/// 安装进度的去处：桌面版发界面事件（`INSTALL_EVENT`），服务器命令行打到 stderr。
+pub type Progress = std::sync::Arc<dyn Fn(InstallProgress) + Send + Sync>;
+
+fn emit(handle: &Progress, app: App, stage: &'static str, percent: Option<f64>) {
+    handle(InstallProgress { app: app.id(), stage, percent });
 }
 
 fn app_error(code: &str, message: impl Into<String>) -> LoovError {
@@ -152,7 +154,7 @@ pub async fn status(state: &AppState) -> Vec<LoovAppStatus> {
 
 // ───────────────────────────── 安装 ─────────────────────────────
 
-pub async fn install(handle: AppHandle, id: &str) -> Result<(), LoovError> {
+pub async fn install(handle: Progress, id: &str) -> Result<(), LoovError> {
     let app = App::parse(id)?;
     let proxy = tunnel_proxy();
     match app.tool() {
@@ -209,6 +211,43 @@ pub async fn launch(state: &AppState, id: &str, restart: bool) -> Result<(), Loo
         App::Desktop | App::CodexDesktop => desktop::launch(desktop::spec(app), state, restart).await?,
     }
     Ok(())
+}
+
+/// 在员工自己的终端里跑某个 CLI agent 需要的命令、参数和环境（服务器模式 `loov-agent run <应用>`）。
+/// env 里值为 None 的是要删掉的变量。Claude Code / Codex 的配置在登录时已写好，只补隧道代理；
+/// agy、Grok 的配置要在启动时准备。
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct CliSpec {
+    pub program: String,
+    pub args: Vec<String>,
+    pub env: Vec<(String, Option<String>)>,
+}
+
+pub async fn cli_spec(state: &AppState, id: &str) -> Result<CliSpec, LoovError> {
+    let app = App::parse(id)?;
+    let Some(proxy) = tunnel_proxy() else {
+        return Err(app_error("TUNNEL_DOWN", "安全通道未连接，连上后才能启动（应用的请求都要经 Loov 计费）"));
+    };
+    let own = |v: Vec<(&str, Option<String>)>| v.into_iter().map(|(k, v)| (k.to_string(), v)).collect::<Vec<_>>();
+    let base_env = || own(proxy_env(&proxy).iter().map(|(k, v)| (k.as_str(), Some(v.clone()))).collect());
+    Ok(match app {
+        App::Claude => CliSpec { program: "claude".into(), args: Vec::new(), env: base_env() },
+        App::Codex => CliSpec { program: "codex".into(), args: Vec::new(), env: base_env() },
+        App::Agy => {
+            let (args, env) = agy_launch_spec(state, &proxy)?;
+            CliSpec { program: "agy".into(), args, env: own(env) }
+        }
+        App::Grok => {
+            super::provision::attach_grok(state).await?;
+            if let Err(e) = super::provision::sync_grok_models(state) {
+                log::error!("[loov] 写 Grok 的模型表失败：{e}");
+            }
+            let mut env = base_env();
+            env.push(("XAI_API_KEY".into(), None));
+            CliSpec { program: "grok".into(), args: Vec::new(), env }
+        }
+        App::Desktop | App::CodexDesktop => return Err(app_error("UNSUPPORTED", "桌面应用不能在终端里启动")),
+    })
 }
 
 /// Grok Build：进路由模式（写 ~/.grok/config.toml）后在终端里跑 `grok`。
@@ -481,7 +520,7 @@ mod desktop {
     }
 
     #[cfg(target_os = "macos")]
-    pub async fn install(spec: &'static Spec, handle: &AppHandle, proxy: Option<&str>) -> Result<(), LoovError> {
+    pub async fn install(spec: &'static Spec, handle: &Progress, proxy: Option<&str>) -> Result<(), LoovError> {
         let client = http_client(spec, proxy)?;
         let tmp = tempfile::Builder::new().prefix("loov-desktop-").tempdir().map_err(io_error)?;
         if spec.app == App::CodexDesktop {
@@ -629,7 +668,7 @@ mod desktop {
     }
 
     #[cfg(windows)]
-    pub async fn install(spec: &'static Spec, handle: &AppHandle, proxy: Option<&str>) -> Result<(), LoovError> {
+    pub async fn install(spec: &'static Spec, handle: &Progress, proxy: Option<&str>) -> Result<(), LoovError> {
         if let Some(store_id) = spec.win_store_id {
             if install_from_store(spec, handle, store_id).await {
                 return Ok(());
@@ -641,7 +680,7 @@ mod desktop {
 
     /// 官方 MSIX，下载后 Add-AppxPackage（按用户安装，不需要管理员）。
     #[cfg(windows)]
-    async fn install_msix(spec: &'static Spec, handle: &AppHandle, proxy: Option<&str>) -> Result<(), LoovError> {
+    async fn install_msix(spec: &'static Spec, handle: &Progress, proxy: Option<&str>) -> Result<(), LoovError> {
         let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
         let client = http_client(spec, proxy)?;
         let url = spec.win_msix.replace("{arch}", arch);
@@ -668,7 +707,7 @@ mod desktop {
     /// 不看 winget 的退出码；每 3 秒查一次，装好就结束。没有 winget、失败或超过 20 分钟返回 false，
     /// 由调用方改走 MSIX。
     #[cfg(windows)]
-    async fn install_from_store(spec: &'static Spec, handle: &AppHandle, store_id: &str) -> bool {
+    async fn install_from_store(spec: &'static Spec, handle: &Progress, store_id: &str) -> bool {
         const LIMIT: Duration = Duration::from_secs(20 * 60);
         super::emit(handle, spec.app, "install", None);
         let mut child = match tokio::process::Command::new("winget")
@@ -766,7 +805,7 @@ mod desktop {
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]
-    pub async fn install(spec: &'static Spec, _handle: &AppHandle, _proxy: Option<&str>) -> Result<(), LoovError> {
+    pub async fn install(spec: &'static Spec, _handle: &Progress, _proxy: Option<&str>) -> Result<(), LoovError> {
         Err(app_error("UNSUPPORTED", format!("{} 暂不支持本平台", spec.name)))
     }
 
@@ -860,7 +899,7 @@ mod desktop {
 
     /// 流式下载并按百分比发进度事件（每 1% 一次）。
     #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
-    async fn download(spec: &Spec, handle: &AppHandle, client: &reqwest::Client, url: &str, dest: &Path) -> Result<(), LoovError> {
+    async fn download(spec: &Spec, handle: &Progress, client: &reqwest::Client, url: &str, dest: &Path) -> Result<(), LoovError> {
         use futures::StreamExt;
         use tokio::io::AsyncWriteExt;
         super::emit(handle, spec.app, "download", Some(0.0));

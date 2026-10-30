@@ -93,7 +93,7 @@ export function UsageCard({ enabled }: { enabled: boolean }) {
                 {r.app === "__search" ? t("loov.usage.search", { calls: m.search.calls }) : appName(r.app)}
               </span>
               <span className="h-1.5 overflow-hidden rounded-full bg-subtle">
-                <span className="block h-full rounded-full bg-action/70" style={{ width: `${Math.max(2, (r.usd / max) * 100)}%` }} />
+                <span className="block h-full rounded-full bg-action opacity-70" style={{ width: `${Math.max(2, (r.usd / max) * 100)}%` }} />
               </span>
               <span className="tabular-nums text-fg-2">{usd(r.usd)}</span>
             </li>

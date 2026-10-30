@@ -45,6 +45,8 @@
 | `local_auth.rs` | 生成与轮换 `lat_` 令牌、本地路由鉴权中间件、识别占位令牌 |
 | `provision.rs` | 写统一供应商（含 Gemini 子供应商）与 Claude Desktop 供应商、聚合成员（GPT / Gemini，见 dev-06）、进入聚合模式、写 Claude 与 Codex 加固键（Claude 加固键含 `CLAUDE_CODE_AUTO_MODE_SERVER=0`：上游不支持 auto mode 服务端分类检查，不关每个会话都会提示 isn't eligible） |
 | `apps.rs` | 启动台：六个应用的检测、安装（经隧道下载）、启动（见 dev-05） |
+| `../core_boot.rs` | 桌面版与服务器模式共用的启动顺序、本机唯一核心锁（见 dev-08） |
+| `../headless/` | 服务器模式：常驻进程、控制套接字、命令行（见 dev-08） |
 | `attribution.rs` | 判定请求来自哪个应用，选用该应用的 new-api Key（见 dev-07） |
 | `fallback.rs` | 模型故障时在同一网关内换模型重试（见 dev-07） |
 | `safety.rs` | agent 权限档位，写成各家原生设置（见 dev-07） |

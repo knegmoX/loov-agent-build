@@ -202,7 +202,11 @@ pub async fn loov_app_set_model(state: tauri::State<'_, AppState>, id: String, m
 
 #[tauri::command]
 pub async fn loov_app_install(app: tauri::AppHandle, id: String) -> Result<(), LoovError> {
-    super::apps::install(app, &id).await
+    use tauri::Emitter;
+    let progress: super::apps::Progress = std::sync::Arc::new(move |p| {
+        let _ = app.emit(super::apps::INSTALL_EVENT, p);
+    });
+    super::apps::install(progress, &id).await
 }
 
 #[tauri::command]

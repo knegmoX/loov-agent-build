@@ -122,6 +122,10 @@ async fn stop_tunnel() {
 
 /// 「代理 / 全局」模式下把系统代理指向 sys-in，直连模式还原。返回设置失败的原因（隧道照常可用）。
 fn apply_system_proxy(handle: &tunnel::TunnelHandle) -> Option<String> {
+    // 服务器上没有系统代理可接管：sys-in 照开，员工按 status 给的地址自己 export
+    if super::headless() {
+        return None;
+    }
     match handle.sys {
         Some(sys) => netmode::engage(sys.ports).err().inspect(|e| log::error!("[loov] 设置系统代理失败：{e}")),
         None => {
@@ -212,6 +216,10 @@ fn harden(state: &AppState) {
 #[cfg(unix)]
 fn install_signal_cleanup() {
     use tokio::signal::unix::{signal, SignalKind};
+    // 服务器常驻进程自己处理信号（SIGHUP 刷新、SIGTERM 正常退出码 0）
+    if super::headless() {
+        return;
+    }
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         for (kind, code) in [(SignalKind::terminate(), 15), (SignalKind::interrupt(), 2), (SignalKind::hangup(), 1)] {
