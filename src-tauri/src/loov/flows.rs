@@ -313,6 +313,8 @@ fn spawn_watchdog(state: &AppState) {
             loop {
                 tick.tick().await;
                 n += 1;
+                // 飞书渠道跟着配置与安全通道走：就绪且启用就连上，否则断开
+                super::feishu::ensure(&state).await;
                 // 每 5 分钟刷新一次模型健康度与回退链（hub 按 new-api 日志判断）
                 if n % 20 == 0 {
                     refresh_models().await;

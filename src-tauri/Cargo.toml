@@ -1,6 +1,6 @@
 [package]
 name = "cc-switch"
-version = "0.2.0"
+version = "0.2.1"
 description = "Loov Agent - use Claude Code and Codex through the Loov secure channel" # loov
 authors = ["Jason Young"]
 license = "MIT"
@@ -60,6 +60,9 @@ httparse = "1"
 tokio-rustls = "0.26"
 rustls = "0.23"
 webpki-roots = "0.26"
+# loov: 飞书渠道——长连接（WebSocket，rustls + webpki 根证书）与扫码二维码
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rustls-native-certs = "0.8"
 regex = "1.10"
 rquickjs = { version = "0.8", features = ["array-buffer", "classes"] }

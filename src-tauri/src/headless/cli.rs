@@ -26,12 +26,16 @@ const HELP: &str = "Loov Agent 服务器模式
   safety <careful|standard|full>
                              agent 权限档位（写成各家自己的设置）
   restore                    恢复登录前的 Claude Code / Codex 配置并停用 Loov
+  feishu connect             扫码连接飞书（终端里显示二维码）
+  feishu status | disconnect
+  feishu agent <claude|codex|agy|grok> | cwd <路径> | group <on|off> | <on|off>
 ";
 
 pub fn run(cmd: &str, args: &[String]) -> i32 {
     match cmd {
         "serve" => super::serve::run(),
         "service" => service(args),
+        "feishu" => feishu(args),
         "help" | "--help" | "-h" => {
             print!("{HELP}");
             0
@@ -239,6 +243,79 @@ fn read_password(label: &str) -> Result<String, String> {
     }
     read.map_err(|e| e.to_string())?;
     Ok(s.trim_end_matches(['\r', '\n']).to_string())
+}
+
+/// `feishu …`：飞书渠道。connect 在终端里显示二维码，轮询到扫码完成。
+fn feishu(args: &[String]) -> i32 {
+    let sub = args.first().map(String::as_str).unwrap_or("status");
+    let arg = args.get(1).cloned();
+    let on_off = |v: &Option<String>| v.as_deref().map(|s| s == "on");
+    let req = match sub {
+        "status" => Request::FeishuStatus,
+        "disconnect" => Request::FeishuDisconnect,
+        "agent" => Request::FeishuConfigure { agent: arg, cwd: None, allow_group: None, enabled: None },
+        "cwd" => Request::FeishuConfigure { agent: None, cwd: arg, allow_group: None, enabled: None },
+        "group" => Request::FeishuConfigure { agent: None, cwd: None, allow_group: on_off(&arg), enabled: None },
+        "on" | "off" => Request::FeishuConfigure { agent: None, cwd: None, allow_group: None, enabled: Some(sub == "on") },
+        "connect" => {
+            let reg = match call(&Request::FeishuBegin, |_| {}) {
+                Ok(v) => v,
+                Err((_, m)) => {
+                    eprintln!("{m}");
+                    return 1;
+                }
+            };
+            let url = reg["url"].as_str().unwrap_or_default();
+            println!("{}", crate::loov::feishu::qr_text(url));
+            println!("用飞书扫上面的二维码，或在飞书里打开：\n  {url}\n（10 分钟内有效）");
+            let code = reg["deviceCode"].as_str().unwrap_or_default().to_string();
+            let mut interval = reg["intervalSecs"].as_u64().unwrap_or(5);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(reg["expiresInSecs"].as_u64().unwrap_or(600));
+            while std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_secs(interval));
+                match call(&Request::FeishuPoll { device_code: code.clone() }, |_| {}) {
+                    Ok(v) if v.as_bool() == Some(true) => {
+                        println!("已连接飞书。现在在飞书里私聊这个机器人就能用 agent（默认 Claude Code，可用 loov-agent feishu agent codex 换）。");
+                        return 0;
+                    }
+                    Ok(_) => {}
+                    Err((_, m)) if m.contains("太快") => interval += 5,
+                    Err((_, m)) => {
+                        eprintln!("{m}");
+                        return 1;
+                    }
+                }
+            }
+            eprintln!("二维码已过期，请重新运行 loov-agent feishu connect");
+            return 1;
+        }
+        other => {
+            eprintln!("未知的 feishu 子命令：{other}\n\n{HELP}");
+            return 2;
+        }
+    };
+    match call(&req, |_| {}) {
+        Ok(v) => {
+            if v.is_null() {
+                println!("已断开飞书（飞书里的应用可在开放平台「我的应用」里删除）");
+            } else {
+                let link = v["link"]["state"].as_str().unwrap_or("stopped");
+                println!(
+                    "飞书：{}｜应用 {}｜agent {}｜目录 {}｜群聊 {}｜连接 {link}",
+                    if v["enabled"].as_bool() == Some(true) { "已启用" } else { "未启用" },
+                    v["appId"].as_str().filter(|s| !s.is_empty()).unwrap_or("未连接"),
+                    v["agent"].as_str().unwrap_or(""),
+                    v["cwd"].as_str().filter(|s| !s.is_empty()).unwrap_or("主目录"),
+                    if v["allowGroup"].as_bool() == Some(true) { "开" } else { "关" },
+                );
+            }
+            0
+        }
+        Err((_, m)) => {
+            eprintln!("{m}");
+            1
+        }
+    }
 }
 
 /// `service install`：写 systemd 用户服务。

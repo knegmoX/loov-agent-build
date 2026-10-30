@@ -11,6 +11,7 @@ export const loovKeys = {
   apps: ["loov", "apps"] as const,
   usage: (range: "today" | "month") => ["loov", "usage", range] as const,
   prefs: ["loov", "prefs"] as const,
+  feishu: ["loov", "feishu"] as const,
 };
 
 export function useLoovAppVersion() {
@@ -43,6 +44,10 @@ export function useLoovUsage(range: "today" | "month", enabled: boolean) {
     refetchInterval: 60_000,
     retry: 1,
   });
+}
+
+export function useLoovFeishu(enabled: boolean) {
+  return useQuery({ queryKey: loovKeys.feishu, queryFn: loovApi.feishuStatus, enabled, refetchInterval: 10_000 });
 }
 
 export function useLoovPrefs() {

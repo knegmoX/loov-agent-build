@@ -32,6 +32,11 @@ pub enum Request {
     Install { app: String },
     Spec { app: String },
     Safety { level: crate::loov::safety::SafetyLevel },
+    FeishuStatus,
+    FeishuBegin,
+    FeishuPoll { device_code: String },
+    FeishuConfigure { agent: Option<String>, cwd: Option<String>, allow_group: Option<bool>, enabled: Option<bool> },
+    FeishuDisconnect,
 }
 
 /// 常驻进程：监听套接字，逐个连接处理。
@@ -109,6 +114,22 @@ async fn dispatch(req: Request, state: AppState, progress: tokio::sync::mpsc::Un
         }
         Request::Spec { app } => to_value(crate::loov::apps::cli_spec(&state, &app).await?),
         Request::Safety { level } => to_value(flows::set_safety(&state, level)?),
+        Request::FeishuStatus => to_value(crate::loov::feishu::status().await),
+        Request::FeishuBegin => {
+            let (reg, _) = crate::loov::feishu::begin().await.map_err(|message| LoovError::Internal { message })?;
+            to_value(reg)
+        }
+        Request::FeishuPoll { device_code } => to_value(
+            crate::loov::feishu::poll(&state, &device_code).await.map_err(|message| LoovError::App { code: "FEISHU".into(), message })?,
+        ),
+        Request::FeishuConfigure { agent, cwd, allow_group, enabled } => to_value(
+            crate::loov::feishu::configure(&state, agent, cwd, allow_group, enabled)
+                .await
+                .map_err(|message| LoovError::App { code: "FEISHU".into(), message })?,
+        ),
+        Request::FeishuDisconnect => {
+            to_value(crate::loov::feishu::disconnect(&state).await.map_err(|message| LoovError::Internal { message })?)
+        }
     }
 }
 

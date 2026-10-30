@@ -14,6 +14,7 @@ Loov Agent 是 CC Switch（MIT）的内部 fork。员工安装后登录公司账
 | [dev-06-network-and-models.md](dev-06-network-and-models.md) | 节点选择、直连 / 代理 / 全局三种网络模式；每个 agent 都能在自己的模型选择器里选 Loov 的全部模型 |
 | [dev-07-billing-and-reliability.md](dev-07-billing-and-reliability.md) | 按应用计费（每应用一把 Key）、用量与预算、云端搜索按成本结算、模型回退与健康度、agent 权限档位 |
 | [dev-08-headless-server.md](dev-08-headless-server.md) | 服务器模式：`loov-agent serve` 常驻进程 + 命令行（login / status / run …），systemd 用户服务 |
+| [dev-09-feishu-channel.md](dev-09-feishu-channel.md) | 飞书渠道：扫码创建个人助手应用，飞书私聊机器人用 agent，流式卡片，费用记在「飞书渠道」 |
 | [research-openbot.md](research-openbot.md) | OpenBot 调研：常驻 AI 同事形态、各家 agent 1–2 年趋势、Loov 路线建议（P0/P1/P2） |
 
 服务端 loov-hub 的接口契约见 hub 仓库的 `docs/API.md`。历史调研与测试报告放在服务器的 `/mnt/data/research/ccswitch/`：`REPORT.md` 是调研，`PLAN.md` 是最初的计划，`TEST_REPORT.md` 和 `M2_REPORT.md` 是测试与实施报告。

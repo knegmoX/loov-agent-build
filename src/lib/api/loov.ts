@@ -21,6 +21,31 @@ export type LoovStatus =
       net: LoovNetView;
     };
 
+/** 飞书渠道（src-tauri/src/loov/feishu）：在飞书里私聊机器人使用 agent */
+export type LoovFeishuLink =
+  | { state: "connecting" }
+  | { state: "connected" }
+  | { state: "retrying"; reason: string }
+  | { state: "stopped" };
+
+export interface LoovFeishuStatus {
+  configured: boolean;
+  enabled: boolean;
+  appId: string;
+  agent: string;
+  cwd: string;
+  allowGroup: boolean;
+  link: LoovFeishuLink;
+}
+
+export interface LoovFeishuRegistration {
+  deviceCode: string;
+  url: string;
+  intervalSecs: number;
+  expiresInSecs: number;
+  qrSvg: string;
+}
+
 /** agent 权限档位：写成各家 agent 自己的原生设置（src-tauri/src/loov/safety.rs） */
 export type LoovSafetyLevel = "careful" | "standard" | "full";
 
@@ -203,6 +228,12 @@ export const loovApi = {
   setNode: (node: string | null) => invoke<LoovStatus>("loov_set_node", { node }),
   setNetMode: (mode: LoovNetMode) => invoke<LoovStatus>("loov_set_net_mode", { mode }),
   prefs: () => invoke<LoovPrefs>("loov_prefs"),
+  feishuStatus: () => invoke<LoovFeishuStatus>("loov_feishu_status"),
+  feishuBegin: () => invoke<LoovFeishuRegistration>("loov_feishu_begin"),
+  feishuPoll: (deviceCode: string) => invoke<boolean>("loov_feishu_poll", { deviceCode }),
+  feishuConfigure: (opts: { agent?: string; cwd?: string; allowGroup?: boolean; enabled?: boolean }) =>
+    invoke<LoovFeishuStatus>("loov_feishu_configure", opts),
+  feishuDisconnect: () => invoke<void>("loov_feishu_disconnect"),
   setSafety: (level: LoovSafetyLevel) => invoke<void>("loov_set_safety", { level }),
 };
 

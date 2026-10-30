@@ -5016,6 +5016,33 @@
       "fullTitle": "Switch to full permissions?",
       "fullDesc": "Agents will edit files and run commands without asking; a mistake could delete data. Use only in isolated environments such as a dedicated cloud server.",
       "fullOk": "Switch"
+    },
+    "feishu": {
+      "title": "Feishu channel",
+      "hint": "Message a bot in Feishu to work with an agent (still billed through Loov)",
+      "hintConnected": "DM your personal assistant bot in Feishu; only you can use it",
+      "connect": "Connect Feishu",
+      "connected": "Feishu connected. Try messaging your personal assistant bot",
+      "expired": "The QR code expired; please connect again",
+      "enable": "Enable Feishu channel",
+      "agent": "Agent for messages",
+      "cwd": "Working folder",
+      "cwdPlaceholder": "Defaults to your home folder",
+      "group": "Group chats",
+      "groupHint": "@-mention the bot in groups too (still only you)",
+      "commands": "In Feishu: /new /agent /cwd /stop /status",
+      "disconnect": "Disconnect",
+      "disconnected": "Feishu disconnected (delete the app under “My apps” on the Feishu open platform if you like)",
+      "scanTitle": "Connect with Feishu",
+      "scanDesc": "Scan with the Feishu mobile app, or open the link in Feishu, to create your personal assistant app (no admin approval needed).",
+      "waiting": "Waiting for you to confirm in Feishu…",
+      "link": {
+        "connected": "Connected",
+        "connecting": "Connecting",
+        "retrying": "Reconnecting",
+        "stopped": "Not connected",
+        "off": "Off"
+      }
     }
   }
 }

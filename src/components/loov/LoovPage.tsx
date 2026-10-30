@@ -36,6 +36,7 @@ import { AppLauncher } from "./AppLauncher";
 import { NetModeSwitch, NodePicker } from "./NetworkControls";
 import { UsageCard } from "./UsageCard";
 import { SafetyLevel } from "./SafetyLevel";
+import { FeishuChannel } from "./FeishuChannel";
 import {
   loovApi,
   parseLoovError,
@@ -418,6 +419,7 @@ function HomePanel({ status }: { status: LoovStatus }) {
       {/* 启动台 */}
       <AppLauncher models={session?.models ?? []} catalog={session?.model_catalog ?? []} tunnelReady={ready} />
       <SafetyLevel />
+      <FeishuChannel enabled={ready} />
       {ready && <p className="px-1 text-xs text-fg-3">{t("loov.apps.hint")}</p>}
 
       {/* 页脚：兑换码 / 设备 / 恢复 / 登出 */}

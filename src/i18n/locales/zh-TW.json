@@ -5017,6 +5017,33 @@
       "fullTitle": "切換到完全權限？",
       "fullDesc": "各 agent 將不再詢問就修改檔案、執行指令，誤操作可能刪除資料。只建議在隔離的環境（如專用雲端伺服器）裡使用。",
       "fullOk": "確認切換"
+    },
+    "feishu": {
+      "title": "飛書渠道",
+      "hint": "在飛書裡私訊機器人，就能用 agent 工作（費用照樣經 Loov 計費）",
+      "hintConnected": "在飛書裡私訊你的個人助理機器人即可；只有你本人能用",
+      "connect": "連接飛書",
+      "connected": "已連接飛書。去飛書裡私訊你的個人助理機器人試試",
+      "expired": "QR 碼已過期，請重新連接",
+      "enable": "啟用飛書渠道",
+      "agent": "處理訊息的 agent",
+      "cwd": "工作目錄",
+      "cwdPlaceholder": "預設是主目錄",
+      "group": "群組",
+      "groupHint": "開啟後在群組裡 @ 機器人也能用（仍只認你本人）",
+      "commands": "飛書裡可發 /new /agent /cwd /stop /status",
+      "disconnect": "中斷",
+      "disconnected": "已中斷飛書（飛書裡的應用可在開放平台「我的應用」裡刪除）",
+      "scanTitle": "用飛書掃碼連接",
+      "scanDesc": "用手機飛書掃碼，或在飛書裡開啟下面的連結，確認建立你的「個人助理」應用（不需要管理員審批）。",
+      "waiting": "等待你在飛書裡確認…",
+      "link": {
+        "connected": "已連接",
+        "connecting": "連接中",
+        "retrying": "重連中",
+        "stopped": "未連接",
+        "off": "已關閉"
+      }
     }
   }
 }

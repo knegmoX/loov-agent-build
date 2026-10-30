@@ -225,6 +225,47 @@ pub async fn loov_set_node(state: tauri::State<'_, AppState>, node: Option<Strin
     flows::set_selection(state.inner(), Some(node), None).await
 }
 
+/// 飞书渠道状态（不含 Secret）。
+#[tauri::command]
+pub async fn loov_feishu_status() -> Result<super::feishu::Status, LoovError> {
+    Ok(super::feishu::status().await)
+}
+
+/// 开始扫码连接飞书：返回链接、二维码（SVG）、设备码与轮询间隔。
+#[tauri::command]
+pub async fn loov_feishu_begin() -> Result<serde_json::Value, LoovError> {
+    let (reg, svg) = super::feishu::begin().await.map_err(|message| LoovError::Internal { message })?;
+    let mut v = serde_json::to_value(reg).map_err(|e| LoovError::Internal { message: e.to_string() })?;
+    v["qrSvg"] = serde_json::Value::String(svg);
+    Ok(v)
+}
+
+/// 轮询一次扫码结果：true = 已连接。
+#[tauri::command]
+pub async fn loov_feishu_poll(state: tauri::State<'_, AppState>, device_code: String) -> Result<bool, LoovError> {
+    super::feishu::poll(state.inner(), &device_code).await.map_err(|message| LoovError::App { code: "FEISHU".into(), message })
+}
+
+/// 改飞书渠道设置：agent、工作目录、群聊、启用。
+#[tauri::command]
+pub async fn loov_feishu_configure(
+    state: tauri::State<'_, AppState>,
+    agent: Option<String>,
+    cwd: Option<String>,
+    allow_group: Option<bool>,
+    enabled: Option<bool>,
+) -> Result<super::feishu::Status, LoovError> {
+    super::feishu::configure(state.inner(), agent, cwd, allow_group, enabled)
+        .await
+        .map_err(|message| LoovError::App { code: "FEISHU".into(), message })
+}
+
+/// 断开飞书并删除本机配置。
+#[tauri::command]
+pub async fn loov_feishu_disconnect(state: tauri::State<'_, AppState>) -> Result<(), LoovError> {
+    super::feishu::disconnect(state.inner()).await.map_err(|message| LoovError::Internal { message })
+}
+
 /// Loov 本机偏好（节点、网络模式、权限档位），给界面显示用。
 #[tauri::command]
 pub async fn loov_prefs() -> Result<super::netmode::Prefs, LoovError> {

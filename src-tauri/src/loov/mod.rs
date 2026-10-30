@@ -17,6 +17,7 @@ pub mod attribution;
 pub mod commands;
 pub mod credentials;
 pub mod fallback;
+pub mod feishu;
 pub mod flows;
 pub mod gemini_route;
 pub mod hub_client;

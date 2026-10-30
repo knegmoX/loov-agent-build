@@ -20,7 +20,7 @@ mod serve;
 /// 子命令名；命令行第一个参数是其中之一时走服务器模式，否则启动桌面版。
 pub const COMMANDS: &[&str] = &[
     "serve", "login", "register", "logout", "status", "refresh", "node", "devices", "usage", "restore", "install", "run",
-    "safety", "service", "help", "--help", "-h", "version", "--version",
+    "safety", "service", "feishu", "help", "--help", "-h", "version", "--version",
 ];
 
 /// 是服务器模式的子命令就执行并返回退出码；否则返回 None（继续启动桌面版）。

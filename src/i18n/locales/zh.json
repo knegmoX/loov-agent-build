@@ -5016,6 +5016,33 @@
       "fullTitle": "切换到完全权限？",
       "fullDesc": "各 agent 将不再询问就修改文件、执行命令，误操作可能删除数据。只建议在隔离的环境（如专用云服务器）里使用。",
       "fullOk": "确认切换"
+    },
+    "feishu": {
+      "title": "飞书渠道",
+      "hint": "在飞书里私聊机器人，就能用 agent 干活（费用照样经 Loov 计费）",
+      "hintConnected": "在飞书里私聊你的个人助手机器人即可；只有你本人能用",
+      "connect": "连接飞书",
+      "connected": "已连接飞书。去飞书里私聊你的个人助手机器人试试",
+      "expired": "二维码已过期，请重新连接",
+      "enable": "启用飞书渠道",
+      "agent": "处理消息的 agent",
+      "cwd": "工作目录",
+      "cwdPlaceholder": "默认是主目录",
+      "group": "群聊",
+      "groupHint": "开启后在群里 @ 机器人也能用（仍只认你本人）",
+      "commands": "飞书里可发 /new /agent /cwd /stop /status",
+      "disconnect": "断开",
+      "disconnected": "已断开飞书（飞书里的应用可在开放平台「我的应用」里删除）",
+      "scanTitle": "用飞书扫码连接",
+      "scanDesc": "用手机飞书扫码，或在飞书里打开下面的链接，确认创建你的「个人助手」应用（不需要管理员审批）。",
+      "waiting": "等待你在飞书里确认…",
+      "link": {
+        "connected": "已连接",
+        "connecting": "连接中",
+        "retrying": "重连中",
+        "stopped": "未连接",
+        "off": "已关闭"
+      }
     }
   }
 }
